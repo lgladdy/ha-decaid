@@ -30,5 +30,16 @@
       "already_configured": "This tablet endpoint is already configured.",
       "reconfigure_successful": "Connection updated."
     }
+  },
+  "entity": {
+    "select": {
+      "steam_purge_mode": {
+        "name": "Steam purge mode",
+        "state": {
+          "normal": "Normal",
+          "two_tap_stop": "Two-tap stop"
+        }
+      }
+    }
   }
 }

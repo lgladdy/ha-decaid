@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -30,6 +31,56 @@ def payloads():
         ],
         "shots?limit=1": {"items": [], "total": 1265, "limit": 1, "offset": 0},
         "steams/ids": ["steam-a", "steam-b"],
+        "machine/info": {
+            "version": "1352",
+            "model": "DE1Pro",
+            "serialNumber": "12345",
+            "GHC": True,
+            "extra": {"refillKit": False, "voltage": 230},
+        },
+        "machine/capabilities": {"capabilities": []},
+        "machine/settings": {
+            "fan": 50,
+            "usb": False,
+            "flushTemp": 89.3,
+            "flushTimeout": 4.7,
+            "flushFlow": 7.1,
+            "hotWaterFlow": 6.2,
+            "steamFlow": 0.81,
+            "tankTemp": 31,
+            "steamPurgeMode": 0,
+        },
+        "display": {
+            "wakeLockEnabled": True,
+            "wakeLockOverride": False,
+            "brightness": 70,
+            "requestedBrightness": 70,
+            "lowBatteryBrightnessActive": False,
+            "platformSupported": {"brightness": True, "wakeLock": True},
+        },
+        "presence/settings": {
+            "userPresenceEnabled": True,
+            "sleepTimeoutMinutes": 30,
+            "keepAwakeUntil": None,
+            "schedules": [],
+        },
+        "update": {
+            "phase": "idle",
+            "currentVersion": "1.4.0",
+            "latestVersion": None,
+            "releaseNotes": None,
+            "releaseUrl": None,
+            "installable": False,
+            "progress": None,
+            "error": None,
+        },
+        "machine/firmware": {
+            "artifacts": [{"id": "de1-1358", "build": 1358, "versionLabel": "1358"}],
+            "machine": {"model": "DE1Pro", "build": 1352},
+            "recommendedArtifactId": "de1-1358",
+            "updateAvailable": True,
+            "operation": {"state": "idle"},
+        },
     }
 
 
@@ -60,10 +111,10 @@ async def setup_entry(hass, payloads):
 
 async def test_entities(hass, setup_entry):
     entry, _ = setup_entry
-    assert len(hass.states.async_all()) == 37
-    assert hass.states.get("sensor.decent_target_steam_temperature").state == "unavailable"
+    assert len(hass.states.async_all()) == 59
+    assert hass.states.get("number.decent_target_steam_temperature").state == "unavailable"
     assert hass.states.get("sensor.decent_water_level").state == "unavailable"
-    assert hass.states.get("sensor.decent_refill_threshold").state == "unavailable"
+    assert hass.states.get("number.decent_refill_threshold").state == "unavailable"
     assert hass.states.get("sensor.decent_grouphead_temperature").state == "92.4"
     assert hass.states.get("sensor.decent_target_dose").state == "18.0"
     assert hass.states.get("binary_sensor.decent_machine_connected").state == "on"
@@ -451,7 +502,7 @@ async def test_streams_start_and_stop_with_entry(
         assert hass.states.get("sensor.decent_state").state == "heating"
         assert hass.states.get("switch.decent_power").state == "on"
         assert hass.states.get("sensor.decent_water_level").state == "28.3"
-        assert hass.states.get("sensor.decent_refill_threshold").state == "5.0"
+        assert hass.states.get("number.decent_refill_threshold").state == "5"
         assert hass.states.get("sensor.decent_scale_weight").state == "36.2"
         assert hass.states.get("sensor.decent_scale_weight_flow").state == "1.5"
         assert hass.states.get("sensor.decent_scale_battery").state == "50.0"
@@ -461,15 +512,15 @@ async def test_streams_start_and_stop_with_entry(
         )
         assert hass.states.get("sensor.decent_shot_phase").state == "idle"
         for suffix, expected, unit in (
-            ("target_steam_temperature", "160.0", "°C"),
-            ("target_steam_duration", "120.0", "s"),
-            ("target_hot_water_temperature", "88.0", "°C"),
-            ("target_hot_water_volume", "50.0", "mL"),
-            ("target_hot_water_duration", "30.0", "s"),
-            ("target_shot_volume", "200.0", "mL"),
+            ("target_steam_temperature", "160", "°C"),
+            ("target_steam_duration", "120", "s"),
+            ("target_hot_water_temperature", "88", "°C"),
+            ("target_hot_water_volume", "50", "mL"),
+            ("target_hot_water_duration", "30", "s"),
+            ("target_shot_volume", "200", "mL"),
             ("configured_group_temperature", "93.0", "°C"),
         ):
-            state = hass.states.get(f"sensor.decent_{suffix}")
+            state = hass.states.get(f"number.decent_{suffix}")
             assert state.state == expected
             assert state.attributes["unit_of_measurement"] == unit
         assert hass.states.get("event.decent_shot_event").state == "unknown"  # Initial replay.
@@ -499,7 +550,11 @@ async def test_shot_events_preserve_rapid_decisions_and_ignore_replay(
     shot.async_receive(shot_payload, initial=True)
     event_id = "event.decent_shot_event"
     events = []
-    unsub = async_track_state_change_event(hass, [event_id], events.append)
+    # A bare builtin is not a callback, so Home Assistant would run it in the
+    # executor and the events could arrive out of order.
+    unsub = async_track_state_change_event(
+        hass, [event_id], callback(lambda event: events.append(event))
+    )
     try:
         for kind, reason, phase in (
             ("advance", "profileSkip", "pouring"),
@@ -576,12 +631,12 @@ async def test_water_entity_disconnect_recovery_and_unchanged_threshold(
         water.async_receive({"currentLevel": level, "refillLevel": 5})
 
     push(28.3)
-    threshold = hass.states.get("sensor.decent_refill_threshold")
+    threshold = hass.states.get("number.decent_refill_threshold")
     freezer.tick(timedelta(seconds=1))
     push(28.4)
     assert hass.states.get("sensor.decent_water_level").state == "28.4"
     assert (
-        hass.states.get("sensor.decent_refill_threshold").last_reported == threshold.last_reported
+        hass.states.get("number.decent_refill_threshold").last_reported == threshold.last_reported
     )
     payloads["devices"] = []
     await entry.runtime_data.devices.async_refresh()
@@ -592,7 +647,7 @@ async def test_water_entity_disconnect_recovery_and_unchanged_threshold(
     assert hass.states.get("sensor.decent_water_level").state == "unavailable"
     push(30)
     assert hass.states.get("sensor.decent_water_level").state == "30.0"
-    assert hass.states.get("sensor.decent_refill_threshold").state == "5.0"
+    assert hass.states.get("number.decent_refill_threshold").state == "5"
 
 
 async def test_shot_settings_follow_machine_availability(
@@ -609,8 +664,8 @@ async def test_shot_settings_follow_machine_availability(
         settings.async_receive(shot_settings_payload)
 
     push()
-    entity_id = "sensor.decent_target_steam_temperature"
-    assert hass.states.get(entity_id).state == "160.0"
+    entity_id = "number.decent_target_steam_temperature"
+    assert hass.states.get(entity_id).state == "160"
     payloads["devices"] = []
     await entry.runtime_data.devices.async_refresh()
     push()
@@ -619,7 +674,7 @@ async def test_shot_settings_follow_machine_availability(
     await entry.runtime_data.devices.async_refresh()
     assert hass.states.get(entity_id).state == "unavailable"
     push()
-    assert hass.states.get(entity_id).state == "160.0"
+    assert hass.states.get(entity_id).state == "160"
 
 
 def _get_from(payloads):
@@ -788,7 +843,14 @@ async def test_diagnostics_redact_private_details(hass, setup_entry):
     assert result["coordinators"]["devices"]["data"][0]["state"] == "connected"
     assert result["coordinators"]["settings"]["data"] == ["chargingState"]
     assert result["coordinators"]["steams"]["data"] == {"count": 2}
-    assert result["coordinators"]["shots"]["data"] == {"total": 1265}
+    assert result["coordinators"]["shots"]["data"] == {
+        "total": 1265,
+        "latest_fields": None,
+        "summary": None,
+    }
+    assert "12345" not in text  # Machine serial number.
+    assert result["coordinators"]["machine_info"]["data"]["model"] == "DE1Pro"
+    assert result["coordinators"]["presence"]["data"]["schedules"] == 0
     assert result["coordinators"]["machine"]["data"]["groupTemperature"] == 92.4
 
 

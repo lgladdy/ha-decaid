@@ -1,6 +1,7 @@
 """Push telemetry with independent REST polling and fallback."""
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from time import monotonic
@@ -311,6 +312,66 @@ class DecaidShotCoordinator(DecaidStreamCoordinator):
         self.async_set_updated_data(self._latest)
 
 
+def _number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def summarize_shot(shot):
+    """Reduce a full shot record's measurements to a few headline figures."""
+    summary = {}
+    measurements = shot.get("measurements")
+    if not isinstance(measurements, list) or not measurements:
+        return summary
+    machines = [m.get("machine") for m in measurements if isinstance(m, dict)]
+    machines = [m for m in machines if isinstance(m, dict)]
+    times = [_parse_timestamp(m.get("timestamp")) for m in machines]
+    times = [t for t in times if t is not None]
+    if len(times) >= 2:
+        try:
+            summary["duration"] = round((times[-1] - times[0]).total_seconds(), 1)
+        except TypeError:
+            pass
+    for key, field in (("peak_pressure", "pressure"), ("peak_flow", "flow")):
+        values = [v for v in (_number(m.get(field)) for m in machines) if v is not None]
+        if values:
+            summary[key] = round(max(values), 1)
+    for measurement in reversed(measurements):
+        scale = measurement.get("scale") if isinstance(measurement, dict) else None
+        weight = _number(scale.get("weight")) if isinstance(scale, dict) else None
+        if weight is not None:
+            summary["final_weight"] = round(weight, 1)
+            break
+    return summary
+
+
+class DecaidLastShotCoordinator(DecaidCoordinator):
+    """The shot history total plus the newest shot, with its measurements summarized."""
+
+    def __init__(self, hass, client):
+        super().__init__(hass, client, "shots?limit=1", 60)
+        self._summary_id = None
+        self._summary = {}
+
+    async def _async_update_data(self):
+        data = await super()._async_update_data()
+        items = data.get("items")
+        latest = items[0] if isinstance(items, list) and items else None
+        if not isinstance(latest, dict) or not isinstance(latest.get("id"), str):
+            return {**data, "latest": None}
+        if latest["id"] != self._summary_id:
+            try:
+                shot = await self.client.get(f"shots/{latest['id']}")
+            except DecaidError as err:
+                # The listing is still useful; retry the summary next poll.
+                _LOGGER.debug("Unable to read Decaid shot %s: %s", latest["id"], err)
+                return {**data, "latest": latest, "summary": {}}
+            self._summary_id = latest["id"]
+            self._summary = summarize_shot(shot)
+        return {**data, "latest": latest, "summary": self._summary}
+
+
 @dataclass
 class DecaidData:
     """Runtime data owned by a config entry."""
@@ -324,8 +385,21 @@ class DecaidData:
     scale: DecaidScaleCoordinator
     shot: DecaidShotCoordinator
     shot_settings: DecaidShotSettingsCoordinator
-    shots: DecaidCoordinator
+    shots: DecaidLastShotCoordinator
     steams: DecaidCoordinator
+    machine_info: DecaidCoordinator
+    capabilities: DecaidCoordinator
+    machine_settings: DecaidCoordinator
+    display: DecaidCoordinator
+    presence: DecaidCoordinator
+    app_update: DecaidCoordinator
+    firmware: DecaidCoordinator
+    cup_warmer: DecaidCoordinator
+    preheat: DecaidCoordinator
+
+    def has_capability(self, capability: str) -> bool:
+        caps = (self.capabilities.data or {}).get("capabilities")
+        return isinstance(caps, list) and capability in caps
 
     @property
     def streams(self):

@@ -1,0 +1,85 @@
+"""Bengle cup warmer."""
+
+import math
+
+from homeassistant.components.climate import (
+    ClimateEntity,
+    ClimateEntityFeature,
+    HVACAction,
+    HVACMode,
+)
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
+
+from .entity import DecaidEntity, add_when_capable
+
+
+async def async_setup_entry(hass, entry, async_add_entities):
+    add_when_capable(entry, "cupWarmer", lambda: [DecaidCupWarmer(entry)], async_add_entities)
+
+
+def _number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) else None
+
+
+class DecaidCupWarmer(DecaidEntity, ClimateEntity):
+    """The cup warmer's manual heating and whole-degree setpoint."""
+
+    _attr_name = "Cup warmer"
+    _attr_icon = "mdi:coffee-outline"
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
+    _attr_supported_features = (
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
+    )
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_target_temperature_step = 1
+    _attr_min_temp = 0
+    _attr_max_temp = 80
+
+    def __init__(self, entry):
+        super().__init__(entry.runtime_data.cup_warmer, entry, "cup_warmer")
+
+    @property
+    def available(self):
+        return super().available and isinstance(self.payload.get("enabled"), bool)
+
+    @property
+    def hvac_mode(self):
+        return HVACMode.HEAT if self.payload.get("enabled") is True else HVACMode.OFF
+
+    @property
+    def hvac_action(self):
+        return HVACAction.HEATING if self.payload.get("enabled") is True else HVACAction.OFF
+
+    @property
+    def current_temperature(self):
+        return _number(self.payload.get("currentTemperature"))
+
+    @property
+    def target_temperature(self):
+        return _number(self.payload.get("temperature"))
+
+    async def async_set_temperature(self, **kwargs):
+        body = {}
+        if (temperature := kwargs.get(ATTR_TEMPERATURE)) is not None:
+            body["temperature"] = int(round(temperature))
+            # Decaid turns manual heating on with a temperature-only request.
+            body["enabled"] = self.payload.get("enabled") is True
+        if (mode := kwargs.get("hvac_mode")) is not None:
+            body["enabled"] = mode == HVACMode.HEAT
+        if body:
+            await self.async_command("PUT", "machine/cupWarmer", body)
+
+    async def async_set_hvac_mode(self, hvac_mode):
+        await self.async_command(
+            "PUT", "machine/cupWarmer", {"enabled": hvac_mode == HVACMode.HEAT}
+        )
+
+    async def async_turn_on(self):
+        await self.async_set_hvac_mode(HVACMode.HEAT)
+
+    async def async_turn_off(self):
+        await self.async_set_hvac_mode(HVACMode.OFF)

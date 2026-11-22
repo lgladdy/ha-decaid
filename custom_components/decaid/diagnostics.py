@@ -22,6 +22,15 @@ COORDINATORS = (
     "shot_settings",
     "shots",
     "steams",
+    "machine_info",
+    "capabilities",
+    "machine_settings",
+    "display",
+    "presence",
+    "app_update",
+    "firmware",
+    "cup_warmer",
+    "preheat",
 )
 
 
@@ -33,7 +42,26 @@ def _summarize(name: str, data: Any) -> Any:
         # Tablet settings can hold account or network details: keys only.
         return sorted(data) if isinstance(data, dict) else type(data).__name__
     if name == "shots":
-        return {"total": data.get("total")} if isinstance(data, dict) else None
+        # Shot records name baristas, drinkers, and coffees: counts and fields only.
+        if not isinstance(data, dict):
+            return None
+        latest = data.get("latest")
+        return {
+            "total": data.get("total"),
+            "latest_fields": sorted(latest) if isinstance(latest, dict) else None,
+            "summary": data.get("summary"),
+        }
+    if name == "presence" and isinstance(data, dict):
+        return {**data, "schedules": len(data.get("schedules") or [])}
+    if name == "firmware" and isinstance(data, dict):
+        return {
+            **{k: v for k, v in data.items() if k != "artifacts"},
+            "artifacts": [
+                {k: a.get(k) for k in ("id", "build", "eligibility")}
+                for a in data.get("artifacts") or []
+                if isinstance(a, dict)
+            ],
+        }
     if name == "steams":
         return {"count": len(data)} if isinstance(data, list) else None
     return async_redact_data(data, TO_REDACT)

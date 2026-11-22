@@ -98,7 +98,7 @@ class DecaidClient:
         self.session = session
         self.base_url = URL.build(scheme="http", host=host, port=port)
 
-    async def request(self, method: str, path: str) -> Any:
+    async def request(self, method: str, path: str, body: Any = None) -> Any:
         """Read JSON, or accept an empty successful command response."""
         # A "?query" is split off: yarl would percent-encode it inside a path segment.
         route, _, query = path.partition("?")
@@ -109,6 +109,7 @@ class DecaidClient:
             async with self.session.request(
                 method,
                 url,
+                json=body,
                 timeout=ClientTimeout(total=5 if method == "GET" else 10),
                 allow_redirects=False,
             ) as response:
@@ -135,6 +136,10 @@ class DecaidClient:
                 timeout=ClientWSTimeout(ws_close=5),
                 max_msg_size=1024 * 1024,
             )
+
+    async def command(self, method: str, path: str, body: Any = None) -> None:
+        """Send a settings or accessory command; never one that starts brewing."""
+        await self.request(method, path, body)
 
     async def set_power(self, awake: bool) -> None:
         """Request wake or sleep; never start brewing."""
