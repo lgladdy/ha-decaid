@@ -1,6 +1,9 @@
 {
   "domain": "decaid",
   "name": "Decaid",
+  "categories": [
+    "appliances_cleaning.cooking"
+  ],
   "codeowners": [
     "@lgladdy",
     "@teich"
