@@ -122,20 +122,12 @@ def test_incomplete_shot_settings():
 def test_history_payloads():
     shots = {"items": [], "total": 3, "limit": 1, "offset": 0}
     assert validate_payload("shots?limit=1", shots) == shots
-    assert validate_payload("steams/ids", ["a", "b"]) == ["a", "b"]
-    assert validate_payload("steams/ids", []) == []
 
 
 @pytest.mark.parametrize("payload", [{}, {"total": True}, {"total": "3"}, {"total": None}, []])
 def test_invalid_shot_list(payload):
     with pytest.raises(DecaidError):
         validate_payload("shots?limit=1", payload)
-
-
-@pytest.mark.parametrize("payload", [{}, [1], [None], "id"])
-def test_invalid_steam_list(payload):
-    with pytest.raises(DecaidError):
-        validate_payload("steams/ids", payload)
 
 
 async def test_query_string_is_not_percent_encoded():

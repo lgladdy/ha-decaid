@@ -31,7 +31,7 @@ Nothing here starts an operation on the machine. There are no controls to pull a
 | Scale measurements | WebSocket | Scale disconnect, stream failure, or 15 seconds without measurements |
 | Shot phase, stop reason, event, scale-lost flag | WebSocket events | No initial snapshot or stream failure |
 | Shot settings | WebSocket changes | No initial snapshot, stream failure, or machine disconnect |
-| Shot count, steam count, last shot | REST, every 60 seconds, and 5 seconds after a shot ends | Corresponding REST request fails |
+| Last shot | REST, every 60 seconds, and 5 seconds after a shot ends | Corresponding REST request fails |
 | Device details, refill kit, Bengle detection | REST, every 5 minutes and when the machine reconnects | Machine not connected |
 | Machine settings, steam purge mode, USB charger | REST, every 5 minutes and after each change | Machine not connected |
 | Screen brightness and keep-awake, presence, sleep timeout | REST, every 60 seconds and after each change | Tablet unreachable, or the tablet platform does not support the feature |

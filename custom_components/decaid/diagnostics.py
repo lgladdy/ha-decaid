@@ -21,7 +21,6 @@ COORDINATORS = (
     "shot",
     "shot_settings",
     "shots",
-    "steams",
     "machine_info",
     "capabilities",
     "machine_settings",
@@ -62,8 +61,6 @@ def _summarize(name: str, data: Any) -> Any:
                 if isinstance(a, dict)
             ],
         }
-    if name == "steams":
-        return {"count": len(data)} if isinstance(data, list) else None
     return async_redact_data(data, TO_REDACT)
 
 

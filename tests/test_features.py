@@ -292,7 +292,6 @@ async def test_last_shot(hass, payloads):  # noqa: F811
         assert state.attributes["peak_pressure"] == 9.0
         assert state.attributes["grinder_setting"] == "12"
         assert state.attributes["stop_reason"] == "targetWeight"
-        assert hass.states.get("sensor.decent_shot_count").state == "7"
         # The full record is read once per shot, not on every poll.
         await entry.runtime_data.shots.async_refresh()
         assert [c.args[0] for c in get.await_args_list].count("shots/shot-1") == 1
@@ -342,6 +341,12 @@ async def test_moved_sensors_are_removed(hass, payloads):  # noqa: F811
     old = registry.async_get_or_create(
         "sensor", "decaid", f"{entry.entry_id}_target_steam_temperature", config_entry=entry
     )
+    dropped = [
+        registry.async_get_or_create(
+            "sensor", "decaid", f"{entry.entry_id}_{key}", config_entry=entry
+        )
+        for key in ("shot_count", "steam_count")
+    ]
     with patch(
         "custom_components.decaid.api.DecaidClient.get",
         side_effect=lambda path: _raise_or_return(payloads[path]),
@@ -349,6 +354,7 @@ async def test_moved_sensors_are_removed(hass, payloads):  # noqa: F811
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         assert registry.async_get(old.entity_id) is None
+        assert all(registry.async_get(e.entity_id) is None for e in dropped)
         assert registry.async_get_entity_id(
             "number", "decaid", f"{entry.entry_id}_target_steam_temperature"
         )

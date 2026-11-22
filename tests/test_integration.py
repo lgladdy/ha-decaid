@@ -30,7 +30,6 @@ def payloads():
             {"type": "scale", "state": "connected"},
         ],
         "shots?limit=1": {"items": [], "total": 1265, "limit": 1, "offset": 0},
-        "steams/ids": ["steam-a", "steam-b"],
         "machine/info": {
             "version": "1352",
             "model": "DE1Pro",
@@ -111,7 +110,7 @@ async def setup_entry(hass, payloads):
 
 async def test_entities(hass, setup_entry):
     entry, _ = setup_entry
-    assert len(hass.states.async_all()) == 59
+    assert len(hass.states.async_all()) == 57
     assert hass.states.get("number.decent_target_steam_temperature").state == "unavailable"
     assert hass.states.get("sensor.decent_water_level").state == "unavailable"
     assert hass.states.get("number.decent_refill_threshold").state == "unavailable"
@@ -187,23 +186,6 @@ async def test_power_guard_and_errors(hass, setup_entry, payloads):
     with pytest.raises(HomeAssistantError):
         await call("turn_off")
     power.assert_not_awaited()
-
-
-async def test_history_counts(hass, setup_entry, payloads):
-    entry, _ = setup_entry
-    assert hass.states.get("sensor.decent_shot_count").state == "1265"
-    assert hass.states.get("sensor.decent_steam_count").state == "2"
-    payloads["shots?limit=1"] = {"items": [], "total": 1266}
-    payloads["steams/ids"] = DecaidError("offline")
-    await entry.runtime_data.shots.async_refresh()
-    await entry.runtime_data.steams.async_refresh()
-    assert hass.states.get("sensor.decent_shot_count").state == "1266"
-    assert hass.states.get("sensor.decent_steam_count").state == "unavailable"
-    # A failing history endpoint does not take the live machine sensors down.
-    assert hass.states.get("sensor.decent_grouphead_temperature").state == "92.4"
-    payloads["steams/ids"] = []
-    await entry.runtime_data.steams.async_refresh()
-    assert hass.states.get("sensor.decent_steam_count").state == "0"
 
 
 async def test_independent_failures_and_recovery(hass, setup_entry, payloads):
@@ -722,7 +704,7 @@ async def test_setup_when_only_device_inventory_answers(hass, payloads):
         assert hass.states.get("switch.decent_power").state == "unavailable"
         assert hass.states.get("binary_sensor.decent_machine_connected").state == "off"
         assert hass.states.get("sensor.decent_tablet_battery").state == "80.0"
-        assert hass.states.get("sensor.decent_shot_count").state == "1265"
+        assert hass.states.get("sensor.decent_last_shot").state == "unknown"
         await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -842,7 +824,6 @@ async def test_diagnostics_redact_private_details(hass, setup_entry):
     assert result["entry"]["machine_id"] == "**REDACTED**"
     assert result["coordinators"]["devices"]["data"][0]["state"] == "connected"
     assert result["coordinators"]["settings"]["data"] == ["chargingState"]
-    assert result["coordinators"]["steams"]["data"] == {"count": 2}
     assert result["coordinators"]["shots"]["data"] == {
         "total": 1265,
         "latest_fields": None,

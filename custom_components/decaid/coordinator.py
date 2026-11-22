@@ -347,7 +347,7 @@ def summarize_shot(shot):
 
 
 class DecaidLastShotCoordinator(DecaidCoordinator):
-    """The shot history total plus the newest shot, with its measurements summarized."""
+    """The newest shot, with its measurements summarized."""
 
     def __init__(self, hass, client):
         super().__init__(hass, client, "shots?limit=1", 60)
@@ -386,7 +386,6 @@ class DecaidData:
     shot: DecaidShotCoordinator
     shot_settings: DecaidShotSettingsCoordinator
     shots: DecaidLastShotCoordinator
-    steams: DecaidCoordinator
     machine_info: DecaidCoordinator
     capabilities: DecaidCoordinator
     machine_settings: DecaidCoordinator
