@@ -5,8 +5,8 @@
     "appliances_cleaning.cooking"
   ],
   "codeowners": [
-    "@lgladdy",
-    "@teich"
+    "@teich",
+    "@lgladdy"
   ],
   "config_flow": true,
   "documentation": "https://github.com/lgladdy/ha-decaid#readme",

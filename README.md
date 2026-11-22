@@ -1,5 +1,8 @@
 # Decaid for Home Assistant
 
+> [!NOTE]
+> This is a fork of [teich/ha-decaid](https://github.com/teich/ha-decaid) and is still in testing. If the original developer wants to adopt the new features, these changes may be merged back upstream.
+
 Bring your Decent Espresso machine into Home Assistant through [Decaid](https://github.com/decentespresso/decaid)'s local API. This custom integration groups controls and sensors under one **Decent** device, with UI setup, live WebSocket telemetry, and REST commands and fallback polling.
 
 ![Decent device in Home Assistant, with power control and machine sensors](docs/device.png)
