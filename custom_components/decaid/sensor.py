@@ -19,11 +19,14 @@ from homeassistant.const import (
     UnitOfPressure,
     UnitOfTemperature,
     UnitOfTime,
-    UnitOfVolume,
     UnitOfVolumeFlowRate,
 )
+from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
+from .const import DOMAIN
 from .entity import DecaidEntity
 
 
@@ -42,52 +45,6 @@ class DecaidSensorDescription(SensorEntityDescription):
 
 
 SENSORS = [
-    *[
-        DecaidSensorDescription(
-            key=key,
-            name=name,
-            source="shot_settings",
-            path=(field,),
-            numeric=True,
-            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-            device_class=SensorDeviceClass.TEMPERATURE,
-        )
-        for key, name, field in (
-            ("target_steam_temperature", "Target steam temperature", "targetSteamTemp"),
-            ("target_hot_water_temperature", "Target hot water temperature", "targetHotWaterTemp"),
-            ("configured_group_temperature", "Configured group temperature", "groupTemp"),
-        )
-    ],
-    *[
-        DecaidSensorDescription(
-            key=key,
-            name=name,
-            source="shot_settings",
-            path=(field,),
-            numeric=True,
-            native_unit_of_measurement=UnitOfTime.SECONDS,
-            device_class=SensorDeviceClass.DURATION,
-        )
-        for key, name, field in (
-            ("target_steam_duration", "Target steam duration", "targetSteamDuration"),
-            ("target_hot_water_duration", "Target hot water duration", "targetHotWaterDuration"),
-        )
-    ],
-    *[
-        DecaidSensorDescription(
-            key=key,
-            name=name,
-            source="shot_settings",
-            path=(field,),
-            numeric=True,
-            native_unit_of_measurement=UnitOfVolume.MILLILITERS,
-            device_class=SensorDeviceClass.VOLUME,
-        )
-        for key, name, field in (
-            ("target_hot_water_volume", "Target hot water volume", "targetHotWaterVolume"),
-            ("target_shot_volume", "Target shot volume", "targetShotVolume"),
-        )
-    ],
     DecaidSensorDescription(
         key="scale_weight",
         name="Scale weight",
@@ -161,16 +118,6 @@ SENSORS = [
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         icon="mdi:cup-water",
-    ),
-    DecaidSensorDescription(
-        key="refill_threshold",
-        name="Refill threshold",
-        source="water",
-        path=("refillLevel",),
-        numeric=True,
-        native_unit_of_measurement=UnitOfLength.MILLIMETERS,
-        device_class=SensorDeviceClass.DISTANCE,
-        icon="mdi:water-alert",
     ),
     *[
         DecaidSensorDescription(
@@ -279,12 +226,35 @@ SENSORS = [
 ]
 
 
+# Sensors that became writable number entities.
+MOVED_TO_NUMBER = (
+    "target_steam_temperature",
+    "target_hot_water_temperature",
+    "configured_group_temperature",
+    "target_steam_duration",
+    "target_hot_water_duration",
+    "target_hot_water_volume",
+    "target_shot_volume",
+    "refill_threshold",
+)
+
+
 async def async_setup_entry(hass, entry, async_add_entities):
+    registry = er.async_get(hass)
+    for key in MOVED_TO_NUMBER:
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_{key}")
+        if entity_id is not None:
+            registry.async_remove(entity_id)
     async_add_entities(
-        (DecaidStopReasonSensor if d.key == "last_shot_stop_reason" else DecaidSensor)(
-            getattr(entry.runtime_data, d.source), entry, d
-        )
-        for d in SENSORS
+        [
+            *(
+                (DecaidStopReasonSensor if d.key == "last_shot_stop_reason" else DecaidSensor)(
+                    getattr(entry.runtime_data, d.source), entry, d
+                )
+                for d in SENSORS
+            ),
+            DecaidLastShotSensor(entry),
+        ]
     )
 
 
@@ -329,3 +299,89 @@ class DecaidStopReasonSensor(DecaidSensor, RestoreEntity):
         last = await self.async_get_last_state()
         if last is not None and last.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
             self.coordinator.restore_stop_reason(last.state)
+
+
+def _value(mapping, key):
+    value = mapping.get(key) if isinstance(mapping, dict) else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value if math.isfinite(value) else None
+    return value if isinstance(value, str) and value else None
+
+
+class DecaidLastShotSensor(DecaidEntity, SensorEntity):
+    """When the newest shot in Decaid's history was pulled, with its details."""
+
+    _attr_name = "Last shot"
+    _attr_icon = "mdi:coffee"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, entry):
+        super().__init__(entry.runtime_data.shots, entry, "last_shot")
+
+    @callback
+    def _handle_coordinator_update(self):
+        # Attributes change without the timestamp changing (the measurement
+        # summary can arrive a poll later); the coordinator only notifies on
+        # changed data, so always write.
+        self.async_write_ha_state()
+
+    @property
+    def _shot(self):
+        latest = self.payload.get("latest")
+        return latest if isinstance(latest, dict) else {}
+
+    @property
+    def native_value(self):
+        timestamp = dt_util.parse_datetime(self._shot.get("timestamp") or "")
+        if timestamp is None:
+            return None
+        if timestamp.tzinfo is None:
+            # Decaid writes the tablet's local time without an offset.
+            timestamp = timestamp.replace(tzinfo=dt_util.get_default_time_zone())
+        return timestamp
+
+    @property
+    def extra_state_attributes(self):
+        shot = self._shot
+        if not shot:
+            return None
+        workflow = shot.get("workflow") if isinstance(shot.get("workflow"), dict) else {}
+        profile = workflow.get("profile") if isinstance(workflow.get("profile"), dict) else {}
+        context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+        notes = shot.get("annotations") if isinstance(shot.get("annotations"), dict) else {}
+        summary = self.payload.get("summary") or {}
+        dose = _value(notes, "actualDoseWeight") or _value(context, "targetDoseWeight")
+        beverage = (
+            _value(notes, "actualYield")
+            or _value(summary, "final_weight")
+            or _value(context, "targetYield")
+        )
+        attributes = {
+            "shot_id": shot.get("id"),
+            "profile": _value(profile, "title"),
+            "dose": dose,
+            "yield": beverage,
+            "ratio": round(beverage / dose, 2)
+            if isinstance(dose, (int, float)) and isinstance(beverage, (int, float)) and dose
+            else None,
+            "target_dose": _value(context, "targetDoseWeight"),
+            "target_yield": _value(context, "targetYield"),
+            "duration": _value(summary, "duration"),
+            "peak_pressure": _value(summary, "peak_pressure"),
+            "peak_flow": _value(summary, "peak_flow"),
+            "final_weight": _value(summary, "final_weight"),
+            "stop_reason": _value(shot, "stopReason"),
+            "coffee_name": _value(context, "coffeeName"),
+            "coffee_roaster": _value(context, "coffeeRoaster"),
+            "grinder": _value(context, "grinderModel"),
+            "grinder_setting": _value(context, "grinderSetting"),
+            "barista": _value(context, "baristaName"),
+            "drinker": _value(context, "drinkerName"),
+            "enjoyment": _value(notes, "enjoyment"),
+            "tds": _value(notes, "drinkTds"),
+            "extraction_yield": _value(notes, "drinkEy"),
+            "notes": _value(notes, "espressoNotes"),
+        }
+        return {key: value for key, value in attributes.items() if value is not None}
