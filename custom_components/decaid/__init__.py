@@ -5,6 +5,7 @@ import asyncio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DecaidClient
@@ -13,9 +14,9 @@ from .coordinator import (
     DecaidCoordinator,
     DecaidData,
     DecaidPushCoordinator,
+    DecaidScaleCoordinator,
     DecaidShotCoordinator,
     DecaidShotSettingsCoordinator,
-    DecaidStreamCoordinator,
     DecaidWaterCoordinator,
 )
 
@@ -34,20 +35,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> bo
         DecaidCoordinator(hass, client, "settings", 60),
         DecaidPushCoordinator(hass, client, "devices", 60, "devices"),
         DecaidWaterCoordinator(hass, client),
-        DecaidStreamCoordinator(hass, client, "scale/snapshot"),
+        DecaidScaleCoordinator(hass, client),
         DecaidShotCoordinator(hass, client),
         DecaidShotSettingsCoordinator(hass, client),
         # History totals: limit=1 keeps the payload small, `total` is the full count.
         DecaidCoordinator(hass, client, "shots?limit=1", 60),
         DecaidCoordinator(hass, client, "steams/ids", 60),
     )
-    await data.machine.async_config_entry_first_refresh()
+    # The tablet is reachable if either the machine state or the device
+    # inventory answers. A machine that is off at the wall leaves machine/state
+    # failing, but the tablet's own entities should still load.
+    results = await asyncio.gather(
+        data.machine.async_config_entry_first_refresh(),
+        data.devices.async_config_entry_first_refresh(),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, BaseException) and not isinstance(result, ConfigEntryNotReady):
+            raise result
+    if all(isinstance(result, ConfigEntryNotReady) for result in results):
+        raise results[0]
     # Optional resources can recover after setup instead of blocking all entities.
     await asyncio.gather(
-        *(
-            c.async_refresh()
-            for c in (data.workflow, data.settings, data.devices, data.shots, data.steams)
-        )
+        *(c.async_refresh() for c in (data.workflow, data.settings, data.shots, data.steams))
     )
     entry.runtime_data = data
 

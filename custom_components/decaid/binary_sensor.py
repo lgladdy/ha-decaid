@@ -1,6 +1,7 @@
 """Connection status from Decaid's device inventory."""
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
+from homeassistant.const import EntityCategory
 
 from .const import CONF_MACHINE_ID
 from .entity import DecaidEntity
@@ -33,6 +34,7 @@ class DecaidConnection(DecaidEntity, BinarySensorEntity):
     """Report whether a matching device is connected."""
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry, kind):
         super().__init__(entry.runtime_data.devices, entry, f"{kind}_connected")
