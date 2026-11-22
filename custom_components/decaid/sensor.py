@@ -40,8 +40,6 @@ class DecaidSensorDescription(SensorEntityDescription):
     # Decimal places kept in the state. Finer jitter in live readings would
     # otherwise write a new recorder row on almost every update.
     precision: int | None = None
-    integer: bool = False
-    count_items: bool = False
 
 
 SENSORS = [
@@ -194,25 +192,6 @@ SENSORS = [
         )
     ],
     DecaidSensorDescription(
-        key="shot_count",
-        name="Shot count",
-        source="shots",
-        path=("total",),
-        numeric=True,
-        integer=True,
-        state_class=SensorStateClass.TOTAL,
-        icon="mdi:coffee",
-    ),
-    DecaidSensorDescription(
-        key="steam_count",
-        name="Steam count",
-        source="steams",
-        path=(),
-        count_items=True,
-        state_class=SensorStateClass.TOTAL,
-        icon="mdi:kettle-steam",
-    ),
-    DecaidSensorDescription(
         key="tablet_battery",
         name="Tablet battery",
         source="settings",
@@ -238,10 +217,14 @@ MOVED_TO_NUMBER = (
     "refill_threshold",
 )
 
+# Sensors that were dropped: Decaid's shot and steam history only covers what
+# the tablet recorded, not the machine's own lifetime counts.
+REMOVED = ("shot_count", "steam_count")
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     registry = er.async_get(hass)
-    for key in MOVED_TO_NUMBER:
+    for key in (*MOVED_TO_NUMBER, *REMOVED):
         entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_{key}")
         if entity_id is not None:
             registry.async_remove(entity_id)
@@ -270,8 +253,6 @@ class DecaidSensor(DecaidEntity, SensorEntity):
     @property
     def native_value(self):
         value = self.coordinator.data
-        if self.entity_description.count_items:
-            return len(value) if isinstance(value, list) else None
         for key in self.entity_description.path:
             value = value.get(key) if isinstance(value, dict) else None
         if self.entity_description.numeric:
@@ -283,8 +264,6 @@ class DecaidSensor(DecaidEntity, SensorEntity):
                 return None
             if not math.isfinite(number):
                 return None
-            if self.entity_description.integer:
-                return int(number)
             if self.entity_description.precision is not None:
                 return round(number, self.entity_description.precision)
             return number

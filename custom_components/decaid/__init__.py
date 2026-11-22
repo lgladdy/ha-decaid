@@ -41,9 +41,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> bo
         DecaidScaleCoordinator(hass, client),
         DecaidShotCoordinator(hass, client),
         DecaidShotSettingsCoordinator(hass, client),
-        # History totals: limit=1 keeps the payload small, `total` is the full count.
         DecaidLastShotCoordinator(hass, client),
-        DecaidCoordinator(hass, client, "steams/ids", 60),
         DecaidCoordinator(hass, client, "machine/info", 300),
         DecaidCoordinator(hass, client, "machine/capabilities", 300),
         # Each read is several BLE register reads; writes refresh it at once.
@@ -77,7 +75,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> bo
                 data.workflow,
                 data.settings,
                 data.shots,
-                data.steams,
                 data.machine_info,
                 data.capabilities,
                 data.machine_settings,
