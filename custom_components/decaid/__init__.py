@@ -7,6 +7,7 @@ from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 
@@ -118,6 +119,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> bo
                         hass, coordinator.async_request_refresh(), "Decaid machine reconnect"
                     )
             machine_was_connected = connected
+            if connected:
+                record_machine_serial(hass, entry, data)
 
     entry.async_on_unload(data.devices.async_add_listener(devices_updated))
     devices_updated()
@@ -125,7 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> bo
     @callback
     def machine_info_updated():
         update_device_info(hass, entry, data.machine_info.data)
-        record_machine_serial(hass, entry, data.machine_info.data)
+        record_machine_serial(hass, entry, data)
 
     entry.async_on_unload(data.machine_info.async_add_listener(machine_info_updated))
 
@@ -158,27 +161,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> bo
     entry.async_on_unload(cancel_pending_shot_refresh)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     update_device_info(hass, entry, data.machine_info.data)
-    record_machine_serial(hass, entry, data.machine_info.data)
+    record_machine_serial(hass, entry, data)
     for coordinator in data.streams:
         coordinator.start(entry)
     return True
 
 
 @callback
-def record_machine_serial(hass: HomeAssistant, entry: DecaidConfigEntry, info) -> None:
+def record_machine_serial(hass: HomeAssistant, entry: DecaidConfigEntry, data) -> None:
     """Identify the entry by its machine, so a new tablet can find it.
 
     Entries made while the machine was away, or before this was added, get
     the serial the first time the machine reports it. Once set it is kept:
     Reconfigure is the way to move an entry to a different machine.
     """
-    serial = machine_serial(info)
-    if (
-        entry.unique_id is None
-        and serial is not None
-        and hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, serial) is None
-    ):
+    if entry.unique_id is not None:
+        return
+    # machine/info describes whichever machine is connected; it only
+    # identifies this entry when that is the machine the entry selects.
+    if not data.machine_connected(entry.data.get(CONF_MACHINE_ID)):
+        return
+    serial = machine_serial(data.machine_info.data)
+    if serial is None:
+        return
+    issue_id = f"duplicate_machine_{entry.entry_id}"
+    owner = hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, serial)
+    if owner is None:
         hass.config_entries.async_update_entry(entry, unique_id=serial)
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return
+    # This machine already has an entry, e.g. a replacement tablet added
+    # before the machine reported its serial. Merging would delete one of
+    # the user's entries, so ask them to resolve it instead.
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="duplicate_machine",
+        translation_placeholders={"entry": entry.title, "existing": owner.title},
+    )
 
 
 @callback
@@ -208,6 +231,11 @@ def update_device_info(hass: HomeAssistant, entry: DecaidConfigEntry, info) -> N
     }
     if changes:
         registry.async_update_device(device.id, **changes)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> None:
+    """Drop any duplicate-machine notice raised for this entry."""
+    ir.async_delete_issue(hass, DOMAIN, f"duplicate_machine_{entry.entry_id}")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> bool:

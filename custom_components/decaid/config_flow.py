@@ -69,7 +69,15 @@ class DecaidConfigFlow(ConfigFlow, domain=DOMAIN):
         # the tablet itself is fine, so either endpoint proves reachability.
         if isinstance(state, DecaidError) and isinstance(devices, DecaidError):
             return {"base": "cannot_connect"}
-        self._serial = machine_serial(info)
+        # machine/info describes whichever machine is connected. Trust its
+        # serial only when that is the machine this entry selects.
+        if isinstance(devices, list) and any(
+            device.get("type") == "machine"
+            and device.get("state") == "connected"
+            and (not data[CONF_MACHINE_ID] or device.get("id") == data[CONF_MACHINE_ID])
+            for device in devices
+        ):
+            self._serial = machine_serial(info)
         machine_id = data[CONF_MACHINE_ID]
         if (
             machine_id
@@ -91,12 +99,13 @@ class DecaidConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         if entry:
             if owner is not None and owner.entry_id != entry.entry_id:
-                # That machine already has its own entry.
-                return self.async_abort(reason="already_configured")
+                return self.async_abort(reason="machine_already_configured")
             return self.async_update_reload_and_abort(
                 entry,
-                # Pointing an entry at a different machine moves its identity too.
-                unique_id=serial or entry.unique_id,
+                # The new tablet may be connected to a different machine. Without
+                # its serial, clear the identity; the entry records it again
+                # once the machine reports one.
+                unique_id=serial,
                 title=_title(entry, data[CONF_HOST]),
                 data_updates=data,
             )

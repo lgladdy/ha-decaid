@@ -973,5 +973,107 @@ async def test_reconfigure_onto_another_entrys_machine_is_refused(hass, setup_en
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"host": "192.168.2.251", "port": 8080}
     )
-    assert result["reason"] == "already_configured"
+    assert result["reason"] == "machine_already_configured"
     assert other.data["host"] == "192.168.2.250"
+
+
+async def test_serial_ignored_for_another_selected_machine(hass, setup_entry, payloads):
+    """machine/info describes the connected machine, not a listed one the entry selects."""
+    entry, _ = setup_entry
+    payloads["devices"] = [
+        {"type": "machine", "id": "a", "state": "connected"},
+        {"type": "machine", "id": "b", "state": "disconnected"},
+    ]
+    result = await hass.config_entries.flow.async_init("decaid", context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"host": "192.168.2.240", "port": 8080, "machine_id": "b"}
+    )
+    await hass.async_block_till_done()
+    # Machine A's existing entry is left alone; B gets an entry of its own.
+    assert result["type"] == "create_entry"
+    assert result["result"].unique_id is None
+    assert entry.data["host"] == "192.168.2.231"
+
+
+async def test_serial_not_recorded_while_selected_machine_is_away(hass, payloads):
+    payloads["devices"] = [
+        {"type": "machine", "id": "a", "state": "connected"},
+        {"type": "machine", "id": "b", "state": "disconnected"},
+    ]
+    entry = MockConfigEntry(
+        domain="decaid", data={"host": "192.168.2.231", "port": 8080, "machine_id": "b"}
+    )
+    entry.add_to_hass(hass)
+    with patch("custom_components.decaid.api.DecaidClient.get", side_effect=_get_from(payloads)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.unique_id is None
+        await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_reconfigure_without_serial_clears_identity(hass, setup_entry, payloads):
+    entry, _ = setup_entry
+    assert entry.unique_id == "12345"
+    payloads["machine/info"] = DecaidError("machine away")
+    payloads["machine/state"] = DecaidError("machine away")
+    payloads["devices"] = []
+    result = await hass.config_entries.flow.async_init(
+        "decaid", context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"host": "192.168.2.232", "port": 8080}
+    )
+    await hass.async_block_till_done()
+    assert result["reason"] == "reconfigure_successful"
+    # The new tablet's machine is unknown, so the old serial must not follow.
+    assert entry.unique_id is None
+
+
+async def test_late_serial_collision_raises_repair_issue(hass, setup_entry, payloads):
+    from homeassistant.helpers import issue_registry as ir
+
+    original, _ = setup_entry
+    real = payloads["machine/info"]
+    payloads["machine/info"] = {**real, "serialNumber": "0"}
+    replacement = MockConfigEntry(
+        domain="decaid", title="New tablet", data={"host": "192.168.2.240", "port": 8080}
+    )
+    replacement.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(replacement.entry_id)
+    await hass.async_block_till_done()
+    assert replacement.unique_id is None
+    payloads["machine/info"] = real
+    await replacement.runtime_data.machine_info.async_refresh()
+    # Neither entry is merged or removed automatically.
+    assert replacement.unique_id is None
+    assert original.unique_id == "12345"
+    issue = ir.async_get(hass).async_get_issue(
+        "decaid", f"duplicate_machine_{replacement.entry_id}"
+    )
+    assert issue is not None
+    assert issue.translation_placeholders["existing"] == original.title
+    assert await hass.config_entries.async_remove(replacement.entry_id)
+    await hass.async_block_till_done()
+    assert (
+        ir.async_get(hass).async_get_issue("decaid", f"duplicate_machine_{replacement.entry_id}")
+        is None
+    )
+
+
+async def test_refill_threshold_rereads_while_stream_is_down(hass, setup_entry, payloads):
+    entry, _ = setup_entry
+    water = entry.runtime_data.water
+    assert not water.stream.active
+    with patch(
+        "custom_components.decaid.api.DecaidClient.command", new_callable=AsyncMock
+    ) as command:
+        payloads["machine/waterLevels"] = {"currentLevel": 28.3, "refillLevel": 8}
+        await hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": "number.decent_refill_threshold", "value": 8},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+    command.assert_awaited_once_with("POST", "machine/waterLevels", {"refillLevel": 8})
+    assert hass.states.get("number.decent_refill_threshold").state == "8"
