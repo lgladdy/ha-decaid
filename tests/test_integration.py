@@ -776,13 +776,15 @@ async def test_diagnostics_redact_private_details(hass, setup_entry):
     from custom_components.decaid.diagnostics import async_get_config_entry_diagnostics
 
     entry, _ = setup_entry
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "machine_id": "abc"})
     entry.runtime_data.settings.last_exception = DecaidError(
         "Unable to read settings: cannot connect to 192.168.2.231:8080"
     )
     result = await async_get_config_entry_diagnostics(hass, entry)
     text = str(result)
     assert "192.168.2.231" not in text
-    assert "abc" not in text  # Device ID.
+    assert "abc" not in text  # Device ID, in the inventory and the configured machine ID.
+    assert result["entry"]["machine_id"] == "**REDACTED**"
     assert result["coordinators"]["devices"]["data"][0]["state"] == "connected"
     assert result["coordinators"]["settings"]["data"] == ["chargingState"]
     assert result["coordinators"]["steams"]["data"] == {"count": 2}

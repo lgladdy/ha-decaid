@@ -6,9 +6,11 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 
+from .const import CONF_MACHINE_ID
+
 REDACTED = "**REDACTED**"
 # Device names, IDs, and addresses identify a household's hardware.
-TO_REDACT = {CONF_HOST, "id", "name", "address", "mac", "serial", "serialNumber"}
+TO_REDACT = {CONF_HOST, CONF_MACHINE_ID, "id", "name", "address", "mac", "serial", "serialNumber"}
 COORDINATORS = (
     "machine",
     "workflow",
