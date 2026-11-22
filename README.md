@@ -13,6 +13,7 @@ Bring your Decent Espresso machine into Home Assistant through [Decaid](https://
 - Scale weight (g), weight flow (g/s), battery (%), and timer (ms) over WebSocket. Battery and timer are unknown when the scale does not report them; an unset timer is also unknown.
 - Shot phase, last shot stop reason, and a scale-lost-during-shot indicator from Decaid's sequencer, plus a Shot event entity for automations.
 - Read-only shot settings: target steam temperature/duration, target hot-water temperature/volume/duration, target shot volume, and configured group temperature.
+- Shot count and steam count: the totals in Decaid's shot and steam history, refreshed over REST every 60 seconds.
 
 ### Data sources and availability
 
@@ -25,6 +26,7 @@ Bring your Decent Espresso machine into Home Assistant through [Decaid](https://
 | Scale measurements | WebSocket | Scale disconnect, stream failure, or 15 seconds without measurements |
 | Shot phase, stop reason, event, scale-lost flag | WebSocket events | No initial snapshot or stream failure |
 | Shot settings | WebSocket changes | No initial snapshot, stream failure, or machine disconnect |
+| Shot count, steam count | REST, every 60 seconds | Corresponding REST request fails |
 
 After a successful wake/sleep command, the switch shows the requested state while the machine catches up, for up to 20 seconds. Fresh readings confirm it or restore the reported state.
 

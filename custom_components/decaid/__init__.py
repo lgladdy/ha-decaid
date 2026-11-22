@@ -37,10 +37,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: DecaidConfigEntry) -> bo
         DecaidStreamCoordinator(hass, client, "scale/snapshot"),
         DecaidShotCoordinator(hass, client),
         DecaidShotSettingsCoordinator(hass, client),
+        # History totals: limit=1 keeps the payload small, `total` is the full count.
+        DecaidCoordinator(hass, client, "shots?limit=1", 60),
+        DecaidCoordinator(hass, client, "steams/ids", 60),
     )
     await data.machine.async_config_entry_first_refresh()
     # Optional resources can recover after setup instead of blocking all entities.
-    await asyncio.gather(*(c.async_refresh() for c in (data.workflow, data.settings, data.devices)))
+    await asyncio.gather(
+        *(
+            c.async_refresh()
+            for c in (data.workflow, data.settings, data.devices, data.shots, data.steams)
+        )
+    )
     entry.runtime_data = data
 
     @callback

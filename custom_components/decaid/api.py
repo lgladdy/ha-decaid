@@ -23,9 +23,16 @@ def _is_number(value):
 
 def validate_payload(path: str, data: Any) -> dict | list:
     """Share validation between REST snapshots and streamed payloads."""
-    expected = list if path == "devices" else dict
+    route = path.partition("?")[0]
+    expected = list if route in ("devices", "steams/ids") else dict
     if not isinstance(data, expected):
         raise DecaidError(f"Invalid response from {path}")
+    if route == "shots" and (
+        not isinstance(data.get("total"), int) or isinstance(data["total"], bool)
+    ):
+        raise DecaidError("Invalid shot list")
+    if route == "steams/ids" and any(not isinstance(item, str) for item in data):
+        raise DecaidError("Invalid steam list")
     if path == "devices" and any(not isinstance(item, dict) for item in data):
         raise DecaidError("Invalid device list")
     if path == "machine/state" and (
@@ -93,10 +100,15 @@ class DecaidClient:
 
     async def request(self, method: str, path: str) -> Any:
         """Read JSON, or accept an empty successful command response."""
+        # A "?query" is split off: yarl would percent-encode it inside a path segment.
+        route, _, query = path.partition("?")
+        url = self.base_url / "api" / "v1" / route
+        if query:
+            url = url.with_query(query)
         try:
             async with self.session.request(
                 method,
-                self.base_url / "api" / "v1" / path,
+                url,
                 timeout=ClientTimeout(total=5 if method == "GET" else 10),
                 allow_redirects=False,
             ) as response:

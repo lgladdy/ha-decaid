@@ -29,6 +29,8 @@ class DecaidSensorDescription(SensorEntityDescription):
     source: str = "machine"
     path: tuple[str, ...]
     numeric: bool = False
+    integer: bool = False
+    count_items: bool = False
 
 
 SENSORS = [
@@ -229,6 +231,25 @@ SENSORS = [
         )
     ],
     DecaidSensorDescription(
+        key="shot_count",
+        name="Shot count",
+        source="shots",
+        path=("total",),
+        numeric=True,
+        integer=True,
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:coffee",
+    ),
+    DecaidSensorDescription(
+        key="steam_count",
+        name="Steam count",
+        source="steams",
+        path=(),
+        count_items=True,
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:kettle-steam",
+    ),
+    DecaidSensorDescription(
         key="tablet_battery",
         name="Tablet battery",
         source="settings",
@@ -259,6 +280,8 @@ class DecaidSensor(DecaidEntity, SensorEntity):
     @property
     def native_value(self):
         value = self.coordinator.data
+        if self.entity_description.count_items:
+            return len(value) if isinstance(value, list) else None
         for key in self.entity_description.path:
             value = value.get(key) if isinstance(value, dict) else None
         if self.entity_description.numeric:
@@ -268,5 +291,7 @@ class DecaidSensor(DecaidEntity, SensorEntity):
                 number = float(value)
             except (ValueError, TypeError, OverflowError):
                 return None
-            return number if math.isfinite(number) else None
+            if not math.isfinite(number):
+                return None
+            return int(number) if self.entity_description.integer else number
         return value if isinstance(value, str) and value else None

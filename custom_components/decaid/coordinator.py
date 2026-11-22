@@ -258,6 +258,8 @@ class DecaidData:
     scale: DecaidStreamCoordinator
     shot: DecaidShotCoordinator
     shot_settings: DecaidShotSettingsCoordinator
+    shots: DecaidCoordinator
+    steams: DecaidCoordinator
 
     @property
     def streams(self):
