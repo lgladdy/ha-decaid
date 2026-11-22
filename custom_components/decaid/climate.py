@@ -23,6 +23,12 @@ def _number(value):
     return value if math.isfinite(value) else None
 
 
+# Home Assistant 2026.11 renamed the climate temperature API to native_*
+# and deprecated the old names (removed in 2027.11). Provide whichever this
+# Home Assistant expects; drop the old names once 2026.11 is the minimum.
+NATIVE_TEMPERATURE_API = hasattr(ClimateEntity, "native_current_temperature")
+
+
 class DecaidCupWarmer(DecaidEntity, ClimateEntity):
     """The cup warmer's manual heating and whole-degree setpoint."""
 
@@ -34,7 +40,6 @@ class DecaidCupWarmer(DecaidEntity, ClimateEntity):
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = 1
     _attr_min_temp = 0
     _attr_max_temp = 80
@@ -54,19 +59,26 @@ class DecaidCupWarmer(DecaidEntity, ClimateEntity):
     def hvac_action(self):
         if self.payload.get("enabled") is not True:
             return HVACAction.OFF
-        current, target = self.current_temperature, self.target_temperature
+        current, target = self._current(), self._target()
         # Decaid does not report the heater's duty; infer it from the setpoint.
         if current is not None and target is not None and current >= target:
             return HVACAction.IDLE
         return HVACAction.HEATING
 
-    @property
-    def current_temperature(self):
+    def _current(self):
         return _number(self.payload.get("currentTemperature"))
 
-    @property
-    def target_temperature(self):
+    def _target(self):
         return _number(self.payload.get("temperature"))
+
+    if NATIVE_TEMPERATURE_API:
+        _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+        native_current_temperature = property(_current)
+        native_target_temperature = property(_target)
+    else:  # Home Assistant before 2026.11
+        _attr_temperature_unit = UnitOfTemperature.CELSIUS
+        current_temperature = property(_current)
+        target_temperature = property(_target)
 
     async def async_set_temperature(self, **kwargs):
         body = {}
