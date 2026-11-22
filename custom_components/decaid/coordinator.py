@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from time import monotonic
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -31,10 +32,19 @@ def _parse_timestamp(value):
 class DecaidCoordinator(DataUpdateCoordinator):
     """Fetch one endpoint without coupling its availability to the others."""
 
-    def __init__(self, hass: HomeAssistant, client: DecaidClient, path: str, seconds: int):
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: DecaidClient,
+        path: str,
+        seconds: int,
+        *,
+        config_entry: ConfigEntry | None = None,
+    ):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=f"Decaid {path}",
             update_interval=timedelta(seconds=seconds),
             always_update=False,
@@ -66,8 +76,8 @@ class DecaidCoordinator(DataUpdateCoordinator):
 class DecaidPushCoordinator(DecaidCoordinator):
     """Stream first, with adaptive REST polling whenever the stream is stale."""
 
-    def __init__(self, hass, client, path, seconds, stream_path):
-        super().__init__(hass, client, path, seconds)
+    def __init__(self, hass, client, path, seconds, stream_path, **kwargs):
+        super().__init__(hass, client, path, seconds, **kwargs)
         self.stream = DecaidStream(self, stream_path)
         self.device_connected = True
         self._latest = None
@@ -84,6 +94,7 @@ class DecaidPushCoordinator(DecaidCoordinator):
             "machine/shotState",
             "machine/shotSettings",
             "machine/waterLevels",
+            "update",
         )
 
     @property
@@ -179,7 +190,9 @@ class DecaidPushCoordinator(DecaidCoordinator):
         if (
             self.stream.active
             and self._latest is not None
-            and (self.path == "devices" or monotonic() - self.stream.received_at <= 2)
+            # Event-driven streams stay quiet while nothing changes; an open
+            # socket keeps their last frame current.
+            and (self.event_driven or monotonic() - self.stream.received_at <= 2)
         ):
             # Fresh push data also satisfies command preflight reads.
             return self._latest
@@ -205,8 +218,8 @@ class DecaidPushCoordinator(DecaidCoordinator):
 class DecaidStreamCoordinator(DecaidPushCoordinator):
     """Optional telemetry without a REST fallback."""
 
-    def __init__(self, hass, client, path):
-        super().__init__(hass, client, path, STALE_SECONDS, path)
+    def __init__(self, hass, client, path, **kwargs):
+        super().__init__(hass, client, path, STALE_SECONDS, path, **kwargs)
         self.last_update_success = False
 
     @callback
@@ -229,8 +242,8 @@ class DecaidStreamCoordinator(DecaidPushCoordinator):
 class DecaidScaleCoordinator(DecaidStreamCoordinator):
     """Scale telemetry; a fresh measurement proves the scale is connected."""
 
-    def __init__(self, hass, client):
-        super().__init__(hass, client, "scale/snapshot")
+    def __init__(self, hass, client, **kwargs):
+        super().__init__(hass, client, "scale/snapshot", **kwargs)
 
     @callback
     def async_receive(self, data, *, initial=False):
@@ -242,11 +255,15 @@ class DecaidScaleCoordinator(DecaidStreamCoordinator):
         super().async_receive(data, initial=initial)
 
 
-class DecaidWaterCoordinator(DecaidStreamCoordinator):
-    """Water levels have a stream but no REST GET endpoint."""
+class DecaidWaterCoordinator(DecaidPushCoordinator):
+    """Water levels stream on change, with REST while the stream is down.
 
-    def __init__(self, hass, client):
-        super().__init__(hass, client, "machine/waterLevels")
+    Decaid builds before November 2026 have no REST endpoint; there the
+    levels are unavailable whenever the stream is.
+    """
+
+    def __init__(self, hass, client, **kwargs):
+        super().__init__(hass, client, "machine/waterLevels", 60, "machine/waterLevels", **kwargs)
 
     @property
     def expects_stream_data(self):
@@ -256,8 +273,8 @@ class DecaidWaterCoordinator(DecaidStreamCoordinator):
 class DecaidShotSettingsCoordinator(DecaidStreamCoordinator):
     """Settings may remain unchanged, but require a fresh snapshot after reconnect."""
 
-    def __init__(self, hass, client):
-        super().__init__(hass, client, "machine/shotSettings")
+    def __init__(self, hass, client, **kwargs):
+        super().__init__(hass, client, "machine/shotSettings", **kwargs)
 
     @property
     def expects_stream_data(self):
@@ -267,8 +284,8 @@ class DecaidShotSettingsCoordinator(DecaidStreamCoordinator):
 class DecaidShotCoordinator(DecaidStreamCoordinator):
     """Publish every sequencer event; distinguish the initial replay from live events."""
 
-    def __init__(self, hass, client):
-        super().__init__(hass, client, "machine/shotState")
+    def __init__(self, hass, client, **kwargs):
+        super().__init__(hass, client, "machine/shotState", **kwargs)
         self.is_replay = True
         self._stop_reason = None
         self._newest_timestamp = None
@@ -349,8 +366,8 @@ def summarize_shot(shot):
 class DecaidLastShotCoordinator(DecaidCoordinator):
     """The newest shot, with its measurements summarized."""
 
-    def __init__(self, hass, client):
-        super().__init__(hass, client, "shots?limit=1", 60)
+    def __init__(self, hass, client, **kwargs):
+        super().__init__(hass, client, "shots?limit=1", 60, **kwargs)
         self._summary_id = None
         self._summary = {}
 
@@ -391,7 +408,7 @@ class DecaidData:
     machine_settings: DecaidCoordinator
     display: DecaidCoordinator
     presence: DecaidCoordinator
-    app_update: DecaidCoordinator
+    app_update: DecaidPushCoordinator
     firmware: DecaidCoordinator
     cup_warmer: DecaidCoordinator
     preheat: DecaidCoordinator
@@ -402,7 +419,15 @@ class DecaidData:
 
     @property
     def streams(self):
-        return (self.machine, self.devices, self.water, self.scale, self.shot, self.shot_settings)
+        return (
+            self.machine,
+            self.devices,
+            self.water,
+            self.scale,
+            self.shot,
+            self.shot_settings,
+            self.app_update,
+        )
 
     def machine_connected(self, machine_id: str | None) -> bool:
         return self.devices.last_update_success and any(

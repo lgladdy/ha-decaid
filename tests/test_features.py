@@ -397,3 +397,55 @@ async def test_bengle_entities(hass, setup, payloads):  # noqa: F811
     await entry.runtime_data.capabilities.async_refresh()
     await hass.async_block_till_done()
     assert len(hass.states.async_all()) == count
+
+
+async def test_attribute_only_changes_are_written(hass, setup, payloads):  # noqa: F811
+    """Climate temperatures and update progress change while the state does not."""
+    entry, _ = setup
+    payloads["machine/cupWarmer"] = {"temperature": 55, "enabled": True, "currentTemperature": 40.0}
+    payloads["machine/cupWarmer/preheat"] = {"enabled": False, "leadMinutes": 30, "active": False}
+    payloads["machine/capabilities"] = BENGLE
+    await entry.runtime_data.capabilities.async_refresh()
+    await hass.async_block_till_done()
+    climate = hass.states.get("climate.decent_cup_warmer")
+    assert climate.attributes["current_temperature"] == 40.0
+    assert climate.attributes["hvac_action"] == "heating"
+    payloads["machine/cupWarmer"] = {"temperature": 55, "enabled": True, "currentTemperature": 55.5}
+    await entry.runtime_data.cup_warmer.async_refresh()
+    climate = hass.states.get("climate.decent_cup_warmer")
+    assert climate.state == "heat"
+    assert climate.attributes["current_temperature"] == 55.5
+    # At temperature: the mat is holding, not heating.
+    assert climate.attributes["hvac_action"] == "idle"
+
+    base = {**payloads["update"], "phase": "downloading", "latestVersion": "1.5.0"}
+    payloads["update"] = {**base, "progress": 0.4}
+    await entry.runtime_data.app_update.async_refresh()
+    assert hass.states.get("update.decent_decaid_app").attributes["update_percentage"] == 40
+    payloads["update"] = {**base, "progress": 0.8}
+    await entry.runtime_data.app_update.async_refresh()
+    assert hass.states.get("update.decent_decaid_app").attributes["update_percentage"] == 80
+
+
+async def test_app_update_survives_failed_download(hass, setup, payloads):  # noqa: F811
+    entry, _ = setup
+    # Decaid keeps latestVersion while it knows of a newer release.
+    payloads["update"] = {**payloads["update"], "phase": "error", "latestVersion": "1.5.0"}
+    await entry.runtime_data.app_update.async_refresh()
+    app = hass.states.get("update.decent_decaid_app")
+    assert app.state == "on"
+    assert app.attributes["latest_version"] == "1.5.0"
+    assert app.attributes["in_progress"] is False
+
+
+async def test_firmware_compares_builds_not_labels(hass, setup, payloads):  # noqa: F811
+    entry, _ = setup
+    payloads["machine/firmware"] = {
+        **payloads["machine/firmware"],
+        "artifacts": [{"id": "de1-1358", "build": 1358, "versionLabel": "v1.4"}],
+    }
+    await entry.runtime_data.firmware.async_refresh()
+    firmware = hass.states.get("update.decent_machine_firmware")
+    assert firmware.state == "on"
+    assert firmware.attributes["latest_version"] == "1358"
+    assert firmware.attributes["title"] == "Firmware v1.4"

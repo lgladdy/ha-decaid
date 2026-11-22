@@ -14,7 +14,7 @@ Bring your Decent Espresso machine into Home Assistant through [Decaid](https://
 - **Live telemetry** over WebSocket: state, substate, temperatures, pressure, flow, and their targets. State changes appear immediately; numerical updates are limited to about once per second while awake and once every 15 seconds while sleeping.
 - **Water level** in millimeters, and a settable **refill threshold**.
 - **Scale**: weight (g), weight flow (g/s), battery (%), and timer (ms), plus **Tare scale**, **Start/Stop/Reset scale timer** buttons.
-- **Shots**: shot phase, last shot stop reason, a scale-lost-during-shot indicator, a Shot event entity for automations, shot and steam counts, and a **Last shot** sensor with the shot's details as attributes.
+- **Shots**: shot phase, last shot stop reason, a scale-lost-during-shot indicator, a Shot event entity for automations, and a **Last shot** sensor with the shot's details as attributes.
 - **Shot settings you can change**: target steam temperature/duration, target hot-water temperature/volume/duration, target shot volume, and configured group temperature.
 - **Machine settings you can change**: USB charger, fan threshold, tank temperature threshold, flush temperature/flow/timeout, hot water flow, steam flow, and steam purge mode.
 - **Tablet**: battery, screen brightness, a screen keep-awake switch, presence detection, the idle sleep timeout, and a **Signal presence** button that restarts the sleep countdown (for example from a motion sensor).
@@ -30,7 +30,7 @@ Nothing here starts an operation on the machine. There are no controls to pull a
 | Machine state, temperatures, pressure, flow | WebSocket; REST fallback | Machine disconnected or both sources fail |
 | Machine and scale connectivity | WebSocket; REST fallback every 10 seconds | Device inventory unavailable |
 | Profile, dose/yield targets, tablet battery | REST, every 60 seconds | Corresponding REST request fails |
-| Water level and refill threshold | WebSocket changes | No initial snapshot, stream failure, or machine disconnect |
+| Water level and refill threshold | WebSocket changes; REST fallback every 60 seconds | Machine disconnected, or both sources fail |
 | Scale measurements | WebSocket | Scale disconnect, stream failure, or 15 seconds without measurements |
 | Shot phase, stop reason, event, scale-lost flag | WebSocket events | No initial snapshot or stream failure |
 | Shot settings | WebSocket changes | No initial snapshot, stream failure, or machine disconnect |
@@ -38,7 +38,8 @@ Nothing here starts an operation on the machine. There are no controls to pull a
 | Device details, refill kit, Bengle detection | REST, every 5 minutes and when the machine reconnects | Machine not connected |
 | Machine settings, steam purge mode, USB charger | REST, every 5 minutes and after each change | Machine not connected |
 | Screen brightness and keep-awake, presence, sleep timeout | REST, every 60 seconds and after each change | Tablet unreachable, or the tablet platform does not support the feature |
-| Decaid app update, machine firmware update | REST, every 15 minutes / hourly | Tablet unreachable; firmware also needs a connected DE1 |
+| Decaid app update | WebSocket changes; REST fallback every 60 seconds | Both sources fail |
+| Machine firmware update | REST, hourly | Tablet unreachable, or no DE1 connected |
 | Cup warmer and pre-warm (Bengle) | REST, every 30/60 seconds and after each change | Machine not connected |
 
 After a successful wake/sleep command, the switch shows the requested state while the machine catches up, for up to 20 seconds. Fresh readings confirm it or restore the reported state.
@@ -47,7 +48,7 @@ Commands still use REST. Turning the switch off while the machine is busy (espre
 
 Connections stay open with heartbeat checks and automatic reconnects. If streaming fails, machine readings fall back to REST every 1–2 seconds while awake or 10 seconds while sleeping/unreachable; device connectivity falls back to 10-second polling. A disconnected machine’s readings are unavailable until fresh data arrives.
 
-Water levels are not polled over REST. The water sensors remain unavailable until their first frame and become unavailable if their stream or the machine disconnects. After the initial snapshot, the stream can stay quiet while the level is unchanged; heartbeat checks monitor the connection. Fresh frames restore availability.
+Water levels stream on change. The stream can stay quiet while the level is unchanged, and heartbeat checks monitor the connection. If it drops, the level is read over REST until it reconnects. Decaid builds from before November 2026 have no REST endpoint for water levels, so on those the water entities are unavailable until the stream returns. They are always unavailable while the machine is disconnected.
 
 Scale readings also use streaming without REST fallback. They become unavailable on scale disconnect, stream failure, or 15 seconds without fresh measurements. A scale reconnect needs a fresh measurement before readings become available again. Numerical updates are limited to about once per second.
 
@@ -82,13 +83,13 @@ It updates 5 seconds after Decaid's sequencer reports the end of a shot, and oth
 
 ## Updates
 
-**Decaid app** shows the installed app version and whether Decaid has found a newer one, with release notes and progress while the tablet installs it. **Machine firmware** compares the connected DE1's firmware with the newest build bundled with Decaid; it is unavailable for a Bengle or when no machine is connected. Neither can be installed from Home Assistant: install app updates on the tablet, and flash firmware from Decaid while you are at the machine.
+**Decaid app** shows the installed app version and whether Decaid has found a newer one, with release notes and live progress while the tablet downloads and installs it. **Machine firmware** compares the connected DE1's firmware with the newest build bundled with Decaid; it is unavailable for a Bengle or when no machine is connected. Neither can be installed from Home Assistant: install app updates on the tablet, and flash firmware from Decaid while you are at the machine.
 
 ## Bengle
 
 When Decaid reports that the connected machine is a Bengle, these entities are added:
 
-- **Cup warmer**: a climate entity with the live mat temperature, whole-degree setpoint (0–80 °C), and heat/off mode.
+- **Cup warmer**: a climate entity with the live mat temperature, whole-degree setpoint (0–80 °C), and heat/off mode. While it is on, it shows as heating below the setpoint and idle once the mat has reached it.
 - **Cup warmer pre-warm** and **Cup warmer pre-warm lead time** (0–120 minutes): warm the mat ahead of a scheduled wake.
 - **Cup warmer pre-warming**: whether pre-warm is running now.
 
@@ -113,7 +114,9 @@ Requires Home Assistant 2026.10+ and Decaid running with its local API reachable
 
 Existing HACS installations and custom repositories migrate to Marketplace when upgrading to Home Assistant 2026.11. Decaid remains a community custom integration.
 
-Use **Reconfigure** if the address changes; entity IDs stay the same. Moving from REST YAML? Remove your old Decent REST sensors, commands, and template switch first. Existing entities aren't migrated automatically, so check entity IDs in dashboards and automations.
+Use **Reconfigure** if the address changes; entity IDs stay the same.
+
+**Replacing the tablet?** Either use **Reconfigure** with the new tablet's address, or add the integration again with the new tablet once it is connected to the machine. The integration recognises the machine by its serial number and moves the existing Decent device to the new tablet, keeping its entities and history, instead of adding a second one. The serial is recorded the first time the machine connects with this version installed, so update before swapping tablets. If you set a machine device ID, enter the new tablet's value or leave it blank, because each tablet can report a different ID for the same machine. Moving from REST YAML? Remove your old Decent REST sensors, commands, and template switch first. Existing entities aren't migrated automatically, so check entity IDs in dashboards and automations.
 
 ### Updating
 

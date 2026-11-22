@@ -509,33 +509,44 @@ async def test_unchanged_pushes_keep_watchdog_fresh_without_notifications(
 
 
 @pytest.mark.parametrize("failure", ["closed", "invalid"])
-async def test_water_stream_failure_and_recovery_without_rest(hass, failure):
-    client = MagicMock(get=AsyncMock())
+@pytest.mark.parametrize("rest", [True, False], ids=["rest", "no_rest"])
+async def test_water_stream_failure_falls_back_to_rest(hass, failure, rest):
+    # Decaid builds before November 2026 have no GET machine/waterLevels.
+    client = MagicMock(
+        get=AsyncMock(return_value={"currentLevel": 27, "refillLevel": 5})
+        if rest
+        else AsyncMock(side_effect=DecaidError("HTTP 404"))
+    )
     c = DecaidWaterCoordinator(hass, client)
+    await c.async_refresh()
+    assert c.last_update_success is rest
     socket = Socket()
     client.connect_stream = AsyncMock(return_value=socket)
     changes = asyncio.Queue()
     unsub = c.async_add_listener(lambda: changes.put_nowait(c.last_update_success))
     c.stream._task = asyncio.create_task(c.stream._run())
     try:
-        assert not c.last_update_success
         await socket.queue.put(message({"currentLevel": 28.3, "refillLevel": 5}))
         assert await asyncio.wait_for(changes.get(), 2)
         assert c.data == {"currentLevel": 28.3, "refillLevel": 5}
+        # A quiet but open stream keeps its last frame without asking REST.
         c.stream.received_at -= 300
         await c.async_refresh()
         assert c.last_update_success
         assert changes.empty()
+        assert client.get.await_count == 1
         await socket.queue.put(
             message({"currentLevel": None, "refillLevel": 5})
             if failure == "invalid"
             else WSMessage(WSMsgType.CLOSED, None, None)
         )
-        assert not await asyncio.wait_for(changes.get(), 2)
+        assert await asyncio.wait_for(changes.get(), 2) is rest
+        assert client.get.await_count == 2
+        if rest:
+            assert c.data == {"currentLevel": 27, "refillLevel": 5}
         await socket.queue.put(message({"currentLevel": 29, "refillLevel": 5}))
         assert await asyncio.wait_for(changes.get(), 3)
         assert c.data == {"currentLevel": 29, "refillLevel": 5}
-        client.get.assert_not_awaited()
     finally:
         unsub()
         await c.stop()

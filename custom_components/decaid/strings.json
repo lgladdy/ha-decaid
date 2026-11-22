@@ -28,7 +28,8 @@
     },
     "abort": {
       "already_configured": "This tablet endpoint is already configured.",
-      "reconfigure_successful": "Connection updated."
+      "reconfigure_successful": "Connection updated.",
+      "moved_to_new_tablet": "This machine was already set up through another tablet. The existing Decent device now uses this tablet, keeping its entities and history."
     }
   },
   "entity": {
