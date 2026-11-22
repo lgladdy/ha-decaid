@@ -8,6 +8,7 @@ from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.decaid.api import DecaidError
+from custom_components.decaid.switch import BUSY_STATES
 
 
 @pytest.fixture
@@ -27,6 +28,8 @@ def payloads():
             {"type": "machine", "id": "abc", "state": "connected"},
             {"type": "scale", "state": "connected"},
         ],
+        "shots?limit=1": {"items": [], "total": 1265, "limit": 1, "offset": 0},
+        "steams/ids": ["steam-a", "steam-b"],
     }
 
 
@@ -57,7 +60,7 @@ async def setup_entry(hass, payloads):
 
 async def test_entities(hass, setup_entry):
     entry, _ = setup_entry
-    assert len(hass.states.async_all()) == 35
+    assert len(hass.states.async_all()) == 37
     assert hass.states.get("sensor.decent_target_steam_temperature").state == "unavailable"
     assert hass.states.get("sensor.decent_water_level").state == "unavailable"
     assert hass.states.get("sensor.decent_refill_threshold").state == "unavailable"
@@ -118,6 +121,11 @@ async def test_power_guard_and_errors(hass, setup_entry, payloads):
     payloads["machine/state"] = {"state": {"state": "espresso"}}
     await call("turn_on")
     power.assert_not_awaited()
+    # Sleeping a busy machine would abort the shot.
+    with pytest.raises(HomeAssistantError, match="busy"):
+        await call("turn_off")
+    power.assert_not_awaited()
+    payloads["machine/state"] = {"state": {"state": "idle"}}
     await call("turn_off")
     power.assert_awaited_once_with(False)
     power.side_effect = DecaidError("HTTP 503")
@@ -128,6 +136,23 @@ async def test_power_guard_and_errors(hass, setup_entry, payloads):
     with pytest.raises(HomeAssistantError):
         await call("turn_off")
     power.assert_not_awaited()
+
+
+async def test_history_counts(hass, setup_entry, payloads):
+    entry, _ = setup_entry
+    assert hass.states.get("sensor.decent_shot_count").state == "1265"
+    assert hass.states.get("sensor.decent_steam_count").state == "2"
+    payloads["shots?limit=1"] = {"items": [], "total": 1266}
+    payloads["steams/ids"] = DecaidError("offline")
+    await entry.runtime_data.shots.async_refresh()
+    await entry.runtime_data.steams.async_refresh()
+    assert hass.states.get("sensor.decent_shot_count").state == "1266"
+    assert hass.states.get("sensor.decent_steam_count").state == "unavailable"
+    # A failing history endpoint does not take the live machine sensors down.
+    assert hass.states.get("sensor.decent_grouphead_temperature").state == "92.4"
+    payloads["steams/ids"] = []
+    await entry.runtime_data.steams.async_refresh()
+    assert hass.states.get("sensor.decent_steam_count").state == "0"
 
 
 async def test_independent_failures_and_recovery(hass, setup_entry, payloads):
@@ -144,7 +169,9 @@ async def test_independent_failures_and_recovery(hass, setup_entry, payloads):
     assert hass.states.get("sensor.decent_tablet_battery").state == "75.0"
     payloads["devices"] = DecaidError("offline")
     await entry.runtime_data.devices.async_refresh()
-    assert hass.states.get("switch.decent_power").state == "unavailable"
+    assert hass.states.get("binary_sensor.decent_machine_connected").state == "unavailable"
+    # A valid machine state read still proves the machine is there.
+    assert hass.states.get("switch.decent_power").state == "off"
 
 
 async def test_flow(hass):
@@ -222,7 +249,7 @@ async def test_setup_retry_and_optional_failure(hass):
         await hass.async_block_till_done()
         assert hass.states.get("sensor.decent_state").state == "sleeping"
         assert hass.states.get("sensor.decent_profile").state == "unavailable"
-        assert hass.states.get("switch.decent_power").state == "unavailable"
+        assert hass.states.get("switch.decent_power").state == "off"
         await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -593,3 +620,222 @@ async def test_shot_settings_follow_machine_availability(
     assert hass.states.get(entity_id).state == "unavailable"
     push()
     assert hass.states.get(entity_id).state == "160.0"
+
+
+def _get_from(payloads):
+    async def get(path):
+        result = payloads[path]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    return get
+
+
+@pytest.mark.parametrize("state", sorted(BUSY_STATES))
+async def test_sleep_refused_while_busy(hass, setup_entry, payloads, state):
+    entry, power = setup_entry
+    payloads["machine/state"] = {"state": {"state": state}}
+    await entry.runtime_data.machine.async_refresh()
+    with pytest.raises(HomeAssistantError, match="busy"):
+        await hass.services.async_call(
+            "switch", "turn_off", {"entity_id": "switch.decent_power"}, blocking=True
+        )
+    power.assert_not_awaited()
+    assert hass.states.get("switch.decent_power").state == "on"
+
+
+async def test_sleep_not_resent_to_sleeping_machine(hass, setup_entry):
+    _, power = setup_entry
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": "switch.decent_power"}, blocking=True
+    )
+    power.assert_not_awaited()
+    assert hass.states.get("switch.decent_power").state == "off"
+
+
+async def test_setup_when_only_device_inventory_answers(hass, payloads):
+    """A machine that is off at the wall must not block the tablet's entities."""
+    payloads["machine/state"] = DecaidError("no machine")
+    payloads["devices"] = [{"type": "machine", "id": "abc", "state": "disconnected"}]
+    entry = MockConfigEntry(domain="decaid", data={"host": "192.168.2.231", "port": 8080})
+    entry.add_to_hass(hass)
+    with patch("custom_components.decaid.api.DecaidClient.get", side_effect=_get_from(payloads)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert hass.states.get("sensor.decent_state").state == "unavailable"
+        assert hass.states.get("switch.decent_power").state == "unavailable"
+        assert hass.states.get("binary_sensor.decent_machine_connected").state == "off"
+        assert hass.states.get("sensor.decent_tablet_battery").state == "80.0"
+        assert hass.states.get("sensor.decent_shot_count").state == "1265"
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_live_readings_rounded_and_flow_class(hass, setup_entry, payloads):
+    entry, _ = setup_entry
+    payloads["machine/state"] = {
+        **payloads["machine/state"],
+        "groupTemperature": 92.4449,
+        "pressure": 9.876,
+        "flow": 2.0412,
+    }
+    await entry.runtime_data.machine.async_refresh()
+    assert hass.states.get("sensor.decent_grouphead_temperature").state == "92.4"
+    assert hass.states.get("sensor.decent_pressure").state == "9.9"
+    flow = hass.states.get("sensor.decent_flow")
+    assert flow.state == "2.0"
+    assert flow.attributes["unit_of_measurement"] == "mL/s"
+    assert flow.attributes["device_class"] == "volume_flow_rate"
+    # Jitter below the kept precision does not write a new state.
+    before = hass.states.get("sensor.decent_grouphead_temperature").last_reported
+    payloads["machine/state"] = {**payloads["machine/state"], "groupTemperature": 92.4101}
+    await entry.runtime_data.machine.async_refresh()
+    assert hass.states.get("sensor.decent_grouphead_temperature").last_reported == before
+
+
+async def test_diagnostic_entity_categories(hass, setup_entry):
+    from homeassistant.const import EntityCategory
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    for entity_id in (
+        "sensor.decent_tablet_battery",
+        "sensor.decent_scale_battery",
+        "binary_sensor.decent_machine_connected",
+        "binary_sensor.decent_scale_connected",
+    ):
+        assert registry.async_get(entity_id).entity_category is EntityCategory.DIAGNOSTIC
+    assert registry.async_get("sensor.decent_pressure").entity_category is None
+
+
+async def test_last_stop_reason_survives_restart(hass, payloads, shot_payload):
+    from homeassistant.core import State
+    from pytest_homeassistant_custom_component.common import mock_restore_cache
+
+    mock_restore_cache(hass, [State("sensor.decent_last_shot_stop_reason", "targetWeight")])
+    entry = MockConfigEntry(domain="decaid", data={"host": "192.168.2.231", "port": 8080})
+    entry.add_to_hass(hass)
+    with patch("custom_components.decaid.api.DecaidClient.get", side_effect=_get_from(payloads)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        shot = entry.runtime_data.shot
+        shot.stream.active = True
+        shot.async_receive(shot_payload, initial=True)
+        assert hass.states.get("sensor.decent_last_shot_stop_reason").state == "targetWeight"
+        shot.async_receive(
+            {**shot_payload, "event": "decision", "decision": {"kind": "stop", "reason": "time"}}
+        )
+        assert hass.states.get("sensor.decent_last_shot_stop_reason").state == "time"
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_event_missed_during_reconnect_is_delivered(hass, setup_entry, shot_payload):
+    entry, _ = setup_entry
+    shot = entry.runtime_data.shot
+    event_id = "event.decent_shot_event"
+    shot.stream.active = True
+    shot.async_receive(shot_payload, initial=True)  # Startup replay: never an event.
+    assert hass.states.get(event_id).state == "unknown"
+    # The same frame replayed after a reconnect is still not an event.
+    shot.async_stream_lost()
+    shot.async_receive(shot_payload, initial=True)
+    assert hass.states.get(event_id).state == "unknown"
+    # A newer frame on reconnect happened while the socket was down.
+    shot.async_stream_lost()
+    shot.async_receive(
+        {
+            **shot_payload,
+            "event": "terminal",
+            "state": "finished",
+            "timestamp": "2026-09-10T07:19:40.000000",
+            "decision": {"kind": "terminal", "reason": "targetWeight"},
+        },
+        initial=True,
+    )
+    state = hass.states.get(event_id)
+    assert state.state not in ("unknown", "unavailable")
+    assert state.attributes["event_type"] == "terminal"
+
+
+async def test_scale_reading_restores_connection(hass, setup_entry):
+    from time import monotonic
+
+    entry, _ = setup_entry
+    scale = entry.runtime_data.scale
+    scale.stream.active = True
+    scale.stream.received_at = monotonic()
+    scale.set_device_connected(False)
+    scale.async_receive({"weight": 1.2, "weightFlow": 0})
+    assert scale.device_connected
+    assert hass.states.get("sensor.decent_scale_weight").state == "1.2"
+
+
+async def test_diagnostics_redact_private_details(hass, setup_entry):
+    from custom_components.decaid.diagnostics import async_get_config_entry_diagnostics
+
+    entry, _ = setup_entry
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "machine_id": "abc"})
+    entry.runtime_data.settings.last_exception = DecaidError(
+        "Unable to read settings: cannot connect to 192.168.2.231:8080"
+    )
+    result = await async_get_config_entry_diagnostics(hass, entry)
+    text = str(result)
+    assert "192.168.2.231" not in text
+    assert "abc" not in text  # Device ID, in the inventory and the configured machine ID.
+    assert result["entry"]["machine_id"] == "**REDACTED**"
+    assert result["coordinators"]["devices"]["data"][0]["state"] == "connected"
+    assert result["coordinators"]["settings"]["data"] == ["chargingState"]
+    assert result["coordinators"]["steams"]["data"] == {"count": 2}
+    assert result["coordinators"]["shots"]["data"] == {"total": 1265}
+    assert result["coordinators"]["machine"]["data"]["groupTemperature"] == 92.4
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("192.168.2.231", "192.168.2.231"),
+        (" ::1 ", "::1"),
+        ("Decent-Tablet.local.", "decent-tablet.local"),
+        ("tablet", "tablet"),
+        ("http://tablet", None),
+        ("tablet:8080", None),
+        ("[::1]", None),
+        ("-bad.local", None),
+        ("bad_host", None),
+        ("", None),
+    ],
+)
+def test_normalize_host(raw, expected):
+    from custom_components.decaid.config_flow import normalize_host
+
+    assert normalize_host(raw) == expected
+
+
+async def test_flow_hostname_and_devices_only(hass):
+    async def get(path):
+        if path == "devices":
+            return [{"type": "machine", "id": "abc", "state": "disconnected"}]
+        raise DecaidError("no machine")
+
+    result = await hass.config_entries.flow.async_init("decaid", context={"source": SOURCE_USER})
+    with (
+        patch("custom_components.decaid.api.DecaidClient.get", side_effect=get),
+        patch("custom_components.decaid.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"host": " Decent-Tablet.local ", "port": 8080, "machine_id": "abc"}
+        )
+        assert result["type"] == "create_entry"
+        assert result["data"]["host"] == "decent-tablet.local"
+        await hass.async_block_till_done()
+
+
+async def test_flow_rejects_unknown_machine_id(hass, payloads):
+    result = await hass.config_entries.flow.async_init("decaid", context={"source": SOURCE_USER})
+    with patch("custom_components.decaid.api.DecaidClient.get", side_effect=_get_from(payloads)):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"host": "192.168.2.231", "port": 8080, "machine_id": "typo"}
+        )
+    assert result["errors"] == {"machine_id": "unknown_machine"}

@@ -11,13 +11,18 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     PERCENTAGE,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+    EntityCategory,
     UnitOfLength,
     UnitOfMass,
     UnitOfPressure,
     UnitOfTemperature,
     UnitOfTime,
     UnitOfVolume,
+    UnitOfVolumeFlowRate,
 )
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .entity import DecaidEntity
 
@@ -29,6 +34,11 @@ class DecaidSensorDescription(SensorEntityDescription):
     source: str = "machine"
     path: tuple[str, ...]
     numeric: bool = False
+    # Decimal places kept in the state. Finer jitter in live readings would
+    # otherwise write a new recorder row on almost every update.
+    precision: int | None = None
+    integer: bool = False
+    count_items: bool = False
 
 
 SENSORS = [
@@ -84,6 +94,7 @@ SENSORS = [
         source="scale",
         path=("weight",),
         numeric=True,
+        precision=1,
         native_unit_of_measurement=UnitOfMass.GRAMS,
         device_class=SensorDeviceClass.WEIGHT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -95,6 +106,7 @@ SENSORS = [
         source="scale",
         path=("weightFlow",),
         numeric=True,
+        precision=1,
         native_unit_of_measurement="g/s",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:water",
@@ -108,6 +120,7 @@ SENSORS = [
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     DecaidSensorDescription(
         key="scale_timer",
@@ -142,6 +155,7 @@ SENSORS = [
         source="water",
         path=("currentLevel",),
         numeric=True,
+        precision=1,
         native_unit_of_measurement=UnitOfLength.MILLIMETERS,
         device_class=SensorDeviceClass.DISTANCE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -164,6 +178,7 @@ SENSORS = [
             name=name,
             path=(field,),
             numeric=True,
+            precision=1,
             native_unit_of_measurement=UnitOfTemperature.CELSIUS,
             device_class=SensorDeviceClass.TEMPERATURE,
             state_class=SensorStateClass.MEASUREMENT,
@@ -182,6 +197,7 @@ SENSORS = [
             name=name,
             path=(field,),
             numeric=True,
+            precision=1,
             native_unit_of_measurement=UnitOfPressure.BAR,
             device_class=SensorDeviceClass.PRESSURE,
             state_class=SensorStateClass.MEASUREMENT,
@@ -197,7 +213,9 @@ SENSORS = [
             name=name,
             path=(field,),
             numeric=True,
-            native_unit_of_measurement="mL/s",
+            precision=1,
+            native_unit_of_measurement=UnitOfVolumeFlowRate.MILLILITERS_PER_SECOND,
+            device_class=SensorDeviceClass.VOLUME_FLOW_RATE,
             state_class=SensorStateClass.MEASUREMENT,
             icon="mdi:water",
         )
@@ -229,6 +247,25 @@ SENSORS = [
         )
     ],
     DecaidSensorDescription(
+        key="shot_count",
+        name="Shot count",
+        source="shots",
+        path=("total",),
+        numeric=True,
+        integer=True,
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:coffee",
+    ),
+    DecaidSensorDescription(
+        key="steam_count",
+        name="Steam count",
+        source="steams",
+        path=(),
+        count_items=True,
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:kettle-steam",
+    ),
+    DecaidSensorDescription(
         key="tablet_battery",
         name="Tablet battery",
         source="settings",
@@ -237,13 +274,17 @@ SENSORS = [
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
 ]
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
-        DecaidSensor(getattr(entry.runtime_data, d.source), entry, d) for d in SENSORS
+        (DecaidStopReasonSensor if d.key == "last_shot_stop_reason" else DecaidSensor)(
+            getattr(entry.runtime_data, d.source), entry, d
+        )
+        for d in SENSORS
     )
 
 
@@ -259,6 +300,8 @@ class DecaidSensor(DecaidEntity, SensorEntity):
     @property
     def native_value(self):
         value = self.coordinator.data
+        if self.entity_description.count_items:
+            return len(value) if isinstance(value, list) else None
         for key in self.entity_description.path:
             value = value.get(key) if isinstance(value, dict) else None
         if self.entity_description.numeric:
@@ -268,5 +311,21 @@ class DecaidSensor(DecaidEntity, SensorEntity):
                 number = float(value)
             except (ValueError, TypeError, OverflowError):
                 return None
-            return number if math.isfinite(number) else None
+            if not math.isfinite(number):
+                return None
+            if self.entity_description.integer:
+                return int(number)
+            if self.entity_description.precision is not None:
+                return round(number, self.entity_description.precision)
+            return number
         return value if isinstance(value, str) and value else None
+
+
+class DecaidStopReasonSensor(DecaidSensor, RestoreEntity):
+    """Keep the last stop reason across restarts until a new one arrives."""
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and last.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            self.coordinator.restore_stop_reason(last.state)

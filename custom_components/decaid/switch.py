@@ -1,4 +1,8 @@
-"""Wake/sleep control; awake machines are never sent idle on turn-on."""
+"""Wake/sleep control.
+
+Awake machines are never sent idle on turn-on, and busy machines are never
+sent to sleep on turn-off.
+"""
 
 import asyncio
 from collections.abc import Callable
@@ -13,6 +17,24 @@ from .const import CONF_MACHINE_ID
 from .entity import DecaidEntity
 
 POWER_TRANSITION_TIMEOUT = 20
+
+# Decaid MachineState values for operations that a sleep request would abort.
+BUSY_STATES = frozenset(
+    {
+        "espresso",
+        "hotWater",
+        "flush",
+        "steam",
+        "steamRinse",
+        "skipStep",
+        "cleaning",
+        "descaling",
+        "calibration",
+        "selfTest",
+        "airPurge",
+        "fwUpgrade",
+    }
+)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -69,9 +91,16 @@ class DecaidPower(DecaidEntity, SwitchEntity):
 
     @property
     def available(self):
+        # Without a device inventory, a valid machine state read is enough:
+        # Decaid cannot report one for a machine that is not connected.
+        machine_present = (
+            self.data.machine_connected(self.machine_id)
+            if self.data.devices.last_update_success
+            else True
+        )
         return (
             super().available
-            and self.data.machine_connected(self.machine_id)
+            and machine_present
             and isinstance(self.state_value, str)
             and self.state_value not in ("", "unknown", "disconnected")
         )
@@ -90,10 +119,17 @@ class DecaidPower(DecaidEntity, SwitchEntity):
             )
             if not self.available:
                 raise HomeAssistantError("Decaid machine is unavailable")
-            if awake and self.state_value != "sleeping":
+            if awake != (self.state_value == "sleeping"):
+                # Already in the requested state: never send idle to an awake
+                # machine (it stops an active shot) or a redundant sleep.
                 self._clear_transition()
                 self.async_write_ha_state()
                 return
+            if not awake and self.state_value in BUSY_STATES:
+                raise HomeAssistantError(
+                    f"Decaid machine is busy ({self.state_value}); "
+                    "not sending it to sleep, which would abort the operation"
+                )
             try:
                 await self.data.client.set_power(awake)
             except DecaidError as err:

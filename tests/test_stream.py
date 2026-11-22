@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from datetime import timedelta
 from time import monotonic
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,6 +16,7 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from custom_components.decaid.api import DecaidClient, DecaidError
 from custom_components.decaid.coordinator import (
     DecaidPushCoordinator,
+    DecaidScaleCoordinator,
     DecaidShotCoordinator,
     DecaidShotSettingsCoordinator,
     DecaidStreamCoordinator,
@@ -667,5 +669,103 @@ async def test_shot_settings_bad_frame_reconnects_without_rest(hass, shot_settin
         assert client.connect_stream.await_count == 2
     finally:
         unsub()
+        await c.stop()
+        await c.async_shutdown()
+
+
+_real_sleep = asyncio.sleep
+
+
+async def _wait_for(predicate, timeout=2):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await _real_sleep(0.01)
+
+
+@pytest.fixture
+def no_backoff():
+    async def fast_sleep(_delay):
+        await _real_sleep(0)
+
+    with patch("custom_components.decaid.stream.asyncio.sleep", side_effect=fast_sleep):
+        yield
+
+
+async def test_unexpected_error_does_not_end_stream(coordinator, no_backoff, caplog):
+    first, second = Socket(), Socket()
+
+    async def boom():
+        raise RuntimeError("surprise")
+
+    first.receive = boom
+    first.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    coordinator.client.connect_stream = AsyncMock(side_effect=[first, second])
+    coordinator.stream._task = asyncio.create_task(coordinator.stream._run())
+    try:
+        await second.queue.put(message(snapshot("heating", 85)))
+        await _wait_for(lambda: coordinator.data["state"]["state"] == "heating")
+        assert coordinator.client.connect_stream.await_count == 2
+        first.close.assert_awaited_once()
+        assert "Unexpected error in Decaid machine/snapshot stream" in caplog.text
+    finally:
+        await coordinator.stop()
+
+
+async def test_persistent_failure_warns_once_then_recovers(coordinator, no_backoff, caplog):
+    caplog.set_level(logging.INFO, logger="custom_components.decaid.stream")
+    socket = Socket()
+    coordinator.client.connect_stream = AsyncMock(side_effect=[OSError("down")] * 6 + [socket])
+    coordinator.stream._task = asyncio.create_task(coordinator.stream._run())
+    try:
+        await socket.queue.put(message(snapshot("heating", 85)))
+        await _wait_for(lambda: coordinator.data["state"]["state"] == "heating")
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "failed 5 times in a row" in warnings[0].getMessage()
+        assert "Decaid machine/snapshot stream recovered" in caplog.text
+    finally:
+        await coordinator.stop()
+
+
+async def test_sleeping_machine_publishes_less_often(hass, coordinator, freezer):
+    push(coordinator, snapshot("sleeping", 50))
+    assert coordinator.data["groupTemperature"] == 50
+    push(coordinator, snapshot("sleeping", 51))
+    freezer.tick(timedelta(seconds=1))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert coordinator.data["groupTemperature"] == 50  # Awake would publish here.
+    freezer.tick(timedelta(seconds=14))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert coordinator.data["groupTemperature"] == 51
+    # Waking is a state change and still publishes immediately.
+    push(coordinator, snapshot("idle", 52))
+    assert coordinator.data["state"]["state"] == "idle"
+
+
+async def test_device_inventory_polls_faster_while_stream_down(hass):
+    c = DecaidPushCoordinator(hass, MagicMock(), "devices", 60, "devices")
+    c.async_stream_lost()
+    assert c.update_interval.total_seconds() == 10
+    await c.async_shutdown()
+
+
+async def test_scale_reading_after_reconnect_without_status(hass, no_backoff):
+    """A build that only reports transitions must not leave the scale blocked."""
+    client = MagicMock(get=AsyncMock())
+    c = DecaidScaleCoordinator(hass, client)
+    first, second = Socket(), Socket()
+    client.connect_stream = AsyncMock(side_effect=[first, second])
+    c.stream._task = asyncio.create_task(c.stream._run())
+    try:
+        await first.queue.put(message({"status": "disconnected"}))
+        await _wait_for(lambda: not c.device_connected)
+        await first.queue.put(WSMessage(WSMsgType.CLOSED, None, None))
+        await second.queue.put(message({"weight": 18.5, "weightFlow": 0}))
+        await _wait_for(lambda: c.last_update_success)
+        assert c.device_connected
+        assert c.data["weight"] == 18.5
+    finally:
         await c.stop()
         await c.async_shutdown()

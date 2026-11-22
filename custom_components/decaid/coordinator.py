@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from time import monotonic
 
 from homeassistant.core import HomeAssistant, callback
@@ -13,6 +13,18 @@ from .api import DecaidClient, DecaidError
 from .stream import STALE_SECONDS, DecaidStream
 
 _LOGGER = logging.getLogger(__name__)
+
+# Numerical pushes publish at most this often. A sleeping machine still streams
+# temperatures; publishing those every second would flood the recorder.
+PUBLISH_SECONDS = 1
+SLEEPING_PUBLISH_SECONDS = STALE_SECONDS
+
+
+def _parse_timestamp(value):
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class DecaidCoordinator(DataUpdateCoordinator):
@@ -113,11 +125,21 @@ class DecaidPushCoordinator(DecaidCoordinator):
         state_changed = self.path == "machine/state" and (
             not self.data or data["state"] != self.data.get("state")
         )
+        interval = (
+            SLEEPING_PUBLISH_SECONDS
+            if self.path == "machine/state" and data["state"].get("state") == "sleeping"
+            else PUBLISH_SECONDS
+        )
         elapsed = monotonic() - self._published_at
-        if self.event_driven or state_changed or not self.last_update_success or elapsed >= 1:
+        if (
+            self.event_driven
+            or state_changed
+            or not self.last_update_success
+            or elapsed >= interval
+        ):
             self._publish()
         elif self._cancel_publish is None:
-            self._cancel_publish = async_call_later(self.hass, 1 - elapsed, self._publish)
+            self._cancel_publish = async_call_later(self.hass, interval - elapsed, self._publish)
 
     @callback
     def _publish(self, _now=None):
@@ -138,7 +160,11 @@ class DecaidPushCoordinator(DecaidCoordinator):
         # Retain the last frame for revision comparisons with in-flight REST.
         # stream.active is false, so it cannot satisfy a new refresh request.
         self._cancel_pending_publish()
-        self.update_interval = timedelta(seconds=10 if self.path == "machine/state" else 60)
+        # Device inventory drives machine availability, so poll it as often as
+        # machine state while its stream is down.
+        self.update_interval = timedelta(
+            seconds=10 if self.path in ("machine/state", "devices") else 60
+        )
 
     async def async_stream_failed(self):
         self.async_stream_lost()
@@ -199,6 +225,22 @@ class DecaidStreamCoordinator(DecaidPushCoordinator):
         return self._latest
 
 
+class DecaidScaleCoordinator(DecaidStreamCoordinator):
+    """Scale telemetry; a fresh measurement proves the scale is connected."""
+
+    def __init__(self, hass, client):
+        super().__init__(hass, client, "scale/snapshot")
+
+    @callback
+    def async_receive(self, data, *, initial=False):
+        # Current Decaid resends the scale status on every new socket, but a
+        # build that only reports transitions could otherwise leave readings
+        # blocked after a reconnect.
+        if not self._stopped and not self.device_connected:
+            self.set_device_connected(True)
+        super().async_receive(data, initial=initial)
+
+
 class DecaidWaterCoordinator(DecaidStreamCoordinator):
     """Water levels have a stream but no REST GET endpoint."""
 
@@ -228,12 +270,36 @@ class DecaidShotCoordinator(DecaidStreamCoordinator):
         super().__init__(hass, client, "machine/shotState")
         self.is_replay = True
         self._stop_reason = None
+        self._newest_timestamp = None
+
+    @callback
+    def restore_stop_reason(self, reason):
+        """Seed the last stop reason from before a restart; live frames win."""
+        if self._stop_reason is None:
+            self._stop_reason = reason
+
+    def _is_replay(self, data, initial):
+        """Decaid replays its latest frame on connect.
+
+        That frame is only new if it is newer than every frame seen so far;
+        then it is an event that happened while the socket was down. The very
+        first frame after startup is always treated as a replay.
+        """
+        timestamp = _parse_timestamp(data["timestamp"])
+        newest = self._newest_timestamp
+        try:
+            if timestamp is not None and (newest is None or timestamp > newest):
+                self._newest_timestamp = timestamp
+            return initial and (newest is None or timestamp is None or timestamp <= newest)
+        except TypeError:  # Naive and aware timestamps cannot be compared.
+            self._newest_timestamp = timestamp
+            return initial
 
     @callback
     def async_receive(self, data, *, initial=False):
         if self._stopped:
             return
-        self.is_replay = initial
+        self.is_replay = self._is_replay(data, initial)
         decision = data.get("decision") or {}
         if decision.get("kind") in ("stop", "abort", "terminal"):
             self._stop_reason = decision.get("reason")
@@ -255,9 +321,11 @@ class DecaidData:
     settings: DecaidCoordinator
     devices: DecaidPushCoordinator
     water: DecaidWaterCoordinator
-    scale: DecaidStreamCoordinator
+    scale: DecaidScaleCoordinator
     shot: DecaidShotCoordinator
     shot_settings: DecaidShotSettingsCoordinator
+    shots: DecaidCoordinator
+    steams: DecaidCoordinator
 
     @property
     def streams(self):
