@@ -52,7 +52,13 @@ class DecaidCupWarmer(DecaidEntity, ClimateEntity):
 
     @property
     def hvac_action(self):
-        return HVACAction.HEATING if self.payload.get("enabled") is True else HVACAction.OFF
+        if self.payload.get("enabled") is not True:
+            return HVACAction.OFF
+        current, target = self.current_temperature, self.target_temperature
+        # Decaid does not report the heater's duty; infer it from the setpoint.
+        if current is not None and target is not None and current >= target:
+            return HVACAction.IDLE
+        return HVACAction.HEATING
 
     @property
     def current_temperature(self):

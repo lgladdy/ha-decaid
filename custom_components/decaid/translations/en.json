@@ -28,7 +28,15 @@
     },
     "abort": {
       "already_configured": "This tablet endpoint is already configured.",
-      "reconfigure_successful": "Connection updated."
+      "machine_already_configured": "The machine connected to this tablet already has its own Decaid entry. Reconfigure that entry instead, or remove it first.",
+      "reconfigure_successful": "Connection updated.",
+      "moved_to_new_tablet": "This machine was already set up through another tablet. The existing Decent device now uses this tablet, keeping its entities and history."
+    }
+  },
+  "issues": {
+    "duplicate_machine": {
+      "title": "Decent machine set up twice",
+      "description": "{entry} is connected to the same machine as {existing}. If you replaced the tablet, delete {entry}, then use Reconfigure on {existing} and enter the new tablet's address. {existing} keeps its entities and history."
     }
   },
   "entity": {

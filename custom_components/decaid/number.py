@@ -342,9 +342,12 @@ class DecaidNumber(DecaidEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         description = self.entity_description
         value = int(round(value)) if description.integer else round(value, 2)
+        stream = getattr(self.coordinator, "stream", None)
         await self.async_command(
             description.method,
             description.path,
             description.body(self, value),
-            refresh=description.refresh,
+            # A stream-backed value arrives over its socket; while the socket
+            # is down, read it back over REST instead.
+            refresh=description.refresh or (stream is not None and not stream.active),
         )

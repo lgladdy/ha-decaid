@@ -89,6 +89,22 @@ def validate_payload(path: str, data: Any) -> dict | list:
     return data
 
 
+def known_value(value) -> str | None:
+    """Decaid reports placeholders before the machine's handshake completes."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = str(value)
+    return value if isinstance(value, str) and value not in ("", "0", "Unknown") else None
+
+
+def machine_serial(info: Any) -> str | None:
+    """The connected machine's serial number, once Decaid has read it.
+
+    Older DE1s report 0 until Decaid resolves their serial from the owner's
+    Decent account, so it can be missing even while the machine is connected.
+    """
+    return known_value(info.get("serialNumber")) if isinstance(info, dict) else None
+
+
 class DecaidClient:
     """Use Home Assistant's shared HTTP session."""
 

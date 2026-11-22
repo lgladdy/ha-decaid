@@ -45,10 +45,9 @@ class DecaidAppUpdate(DecaidEntity, UpdateEntity):
 
     @property
     def latest_version(self):
-        latest = _text(self.payload.get("latestVersion"))
-        if self.payload.get("phase") in ("available", "downloading", "installing") and latest:
-            return latest
-        return self.installed_version
+        # Decaid sets latestVersion only while it knows of a newer release, so
+        # it stays set through a recheck or a failed download.
+        return _text(self.payload.get("latestVersion")) or self.installed_version
 
     @property
     def in_progress(self):
@@ -109,11 +108,22 @@ class DecaidFirmwareUpdate(DecaidEntity, UpdateEntity):
     def latest_version(self):
         recommended = self._recommended
         if self.payload.get("updateAvailable") is True and recommended is not None:
+            # Compare builds with builds: installed_version is the build number,
+            # and a label such as "v1.4" would sort below "1352".
             build = recommended.get("build")
-            label = _text(recommended.get("versionLabel"))
-            if label or isinstance(build, int):
-                return label or str(build)
+            if isinstance(build, int) and not isinstance(build, bool):
+                return str(build)
+            return _text(recommended.get("versionLabel"))
         return self.installed_version
+
+    @property
+    def title(self):
+        recommended = self._recommended
+        if self.payload.get("updateAvailable") is True and recommended is not None:
+            label = _text(recommended.get("versionLabel"))
+            if label and label != self.latest_version:
+                return f"Firmware {label}"
+        return None
 
     @property
     def in_progress(self):

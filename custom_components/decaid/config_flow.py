@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import DecaidClient, DecaidError
+from .api import DecaidClient, DecaidError, machine_serial
 from .const import CONF_MACHINE_ID, DEFAULT_PORT, DOMAIN
 
 _LABEL = r"(?!-)[a-z0-9-]{1,63}(?<!-)"
@@ -31,6 +31,13 @@ def normalize_host(value: str) -> str | None:
     return host if _HOSTNAME.fullmatch(host) else None
 
 
+def _title(entry, host: str) -> str:
+    """Follow the host in the title, unless the user has renamed the entry."""
+    if entry.title != f"Decent ({entry.data[CONF_HOST]})":
+        return entry.title
+    return f"Decent ({host})"
+
+
 class DecaidConfigFlow(ConfigFlow, domain=DOMAIN):
     """Set up and reconfigure a tablet endpoint."""
 
@@ -43,18 +50,34 @@ class DecaidConfigFlow(ConfigFlow, domain=DOMAIN):
         return await self._async_form("reconfigure", user_input)
 
     async def _async_validate(self, data: dict[str, Any]) -> dict[str, str]:
-        """Check the tablet answers and that a given machine ID exists."""
+        """Check the tablet answers and that a given machine ID exists.
+
+        Also note the connected machine's serial, if Decaid has one yet.
+        """
+        self._serial = None
         client = DecaidClient(async_get_clientsession(self.hass), data[CONF_HOST], data[CONF_PORT])
-        state, devices = await asyncio.gather(
-            client.get("machine/state"), client.get("devices"), return_exceptions=True
+        state, devices, info = await asyncio.gather(
+            client.get("machine/state"),
+            client.get("devices"),
+            client.get("machine/info"),
+            return_exceptions=True,
         )
-        for result in (state, devices):
+        for result in (state, devices, info):
             if isinstance(result, BaseException) and not isinstance(result, DecaidError):
                 raise result
         # A machine that is off at the wall leaves machine/state failing while
         # the tablet itself is fine, so either endpoint proves reachability.
         if isinstance(state, DecaidError) and isinstance(devices, DecaidError):
             return {"base": "cannot_connect"}
+        # machine/info describes whichever machine is connected. Trust its
+        # serial only when that is the machine this entry selects.
+        if isinstance(devices, list) and any(
+            device.get("type") == "machine"
+            and device.get("state") == "connected"
+            and (not data[CONF_MACHINE_ID] or device.get("id") == data[CONF_MACHINE_ID])
+            for device in devices
+        ):
+            self._serial = machine_serial(info)
         machine_id = data[CONF_MACHINE_ID]
         if (
             machine_id
@@ -66,6 +89,41 @@ class DecaidConfigFlow(ConfigFlow, domain=DOMAIN):
         ):
             return {CONF_MACHINE_ID: "unknown_machine"}
         return {}
+
+    async def _async_finish(self, entry, data: dict[str, Any]) -> ConfigFlowResult:
+        serial = self._serial
+        owner = (
+            self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, serial)
+            if serial
+            else None
+        )
+        if entry:
+            if owner is not None and owner.entry_id != entry.entry_id:
+                return self.async_abort(reason="machine_already_configured")
+            return self.async_update_reload_and_abort(
+                entry,
+                # The new tablet may be connected to a different machine. Without
+                # its serial, clear the identity; the entry records it again
+                # once the machine reports one.
+                unique_id=serial,
+                title=_title(entry, data[CONF_HOST]),
+                data_updates=data,
+            )
+        if owner is not None:
+            # A new tablet for a machine that is already set up, e.g. after
+            # replacing the tablet: move the existing entry, keeping its
+            # entities and history, rather than adding a duplicate.
+            if all(owner.data.get(key) == value for key, value in data.items()):
+                return self.async_abort(reason="already_configured")
+            return self.async_update_reload_and_abort(
+                owner,
+                title=_title(owner, data[CONF_HOST]),
+                data_updates=data,
+                reason="moved_to_new_tablet",
+            )
+        if serial:
+            await self.async_set_unique_id(serial)
+        return self.async_create_entry(title=f"Decent ({data[CONF_HOST]})", data=data)
 
     async def _async_form(self, step: str, user_input: dict[str, Any] | None):
         errors = {}
@@ -87,9 +145,7 @@ class DecaidConfigFlow(ConfigFlow, domain=DOMAIN):
                 data[CONF_MACHINE_ID] = data.get(CONF_MACHINE_ID, "").strip()
                 errors = await self._async_validate(data)
                 if not errors:
-                    if entry:
-                        return self.async_update_reload_and_abort(entry, data_updates=data)
-                    return self.async_create_entry(title=f"Decent ({data[CONF_HOST]})", data=data)
+                    return await self._async_finish(entry, data)
         return self.async_show_form(
             step_id=step,
             data_schema=vol.Schema(

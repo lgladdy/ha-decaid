@@ -33,12 +33,22 @@ class DecaidEntity(CoordinatorEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
-        self._last_coordinator_state = (self.available, self.state)
+        self._last_coordinator_state = self._coordinator_state()
+
+    def _coordinator_state(self):
+        """What Home Assistant would record for this entity.
+
+        Attributes count too: a climate entity's temperatures and an update
+        entity's progress change while the state itself stays the same.
+        """
+        if not self.available:
+            return (False, None, None, None)
+        return (True, self.state, self.state_attributes, self.extra_state_attributes)
 
     @callback
     def _handle_coordinator_update(self):
-        """Write only when this entity's value or availability changes."""
-        state = (self.available, self.state)
+        """Write only when this entity's value, attributes, or availability change."""
+        state = self._coordinator_state()
         if state != self._last_coordinator_state:
             self._last_coordinator_state = state
             self.async_write_ha_state()

@@ -21,7 +21,6 @@ from homeassistant.const import (
     UnitOfTime,
     UnitOfVolumeFlowRate,
 )
-from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
@@ -298,13 +297,6 @@ class DecaidLastShotSensor(DecaidEntity, SensorEntity):
 
     def __init__(self, entry):
         super().__init__(entry.runtime_data.shots, entry, "last_shot")
-
-    @callback
-    def _handle_coordinator_update(self):
-        # Attributes change without the timestamp changing (the measurement
-        # summary can arrive a poll later); the coordinator only notifies on
-        # changed data, so always write.
-        self.async_write_ha_state()
 
     @property
     def _shot(self):
