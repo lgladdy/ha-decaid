@@ -1,8 +1,5 @@
 # Decaid for Home Assistant
 
-> [!NOTE]
-> This is a fork of [teich/ha-decaid](https://github.com/teich/ha-decaid) and is still in testing. If the original developer wants to adopt the new features, these changes may be merged back upstream.
-
 Bring your Decent Espresso machine into Home Assistant through [Decaid](https://github.com/decentespresso/decaid)'s local API. This custom integration groups controls and sensors under one **Decent** device, with UI setup, live WebSocket telemetry, and REST commands and fallback polling.
 
 ![Decent device in Home Assistant, with power control and machine sensors](docs/device.png)
@@ -105,9 +102,9 @@ The API snapshot has no explicit brew-ready flag. `idle` alone does not establis
 
 Requires Home Assistant 2026.10+ and Decaid running with its local API reachable from Home Assistant (port `8080` by default). Decaid's API varies by version: if optional streams are missing, their entities will remain unavailable. Use a current Decaid release for the full feature set.
 
-[Open this repository in HACS or Marketplace](https://my.home-assistant.io/redirect/hacs_repository/?owner=lgladdy&repository=ha-decaid&category=integration)
+[Open this repository in HACS or Marketplace](https://my.home-assistant.io/redirect/hacs_repository/?owner=teich&repository=ha-decaid&category=integration)
 
-1. On Home Assistant 2026.11 and later, open **Settings → Marketplace**, connect GitHub if needed, and add `https://github.com/lgladdy/ha-decaid` as a custom **Integration** repository. On earlier versions, add it under **HACS → Custom repositories** instead. The link above works with both.
+1. On Home Assistant 2026.11 and later, open **Settings → Marketplace**, connect GitHub if needed, and add `https://github.com/teich/ha-decaid` as a custom **Integration** repository. On earlier versions, add it under **HACS → Custom repositories** instead. The link above works with both.
 2. Download **Decaid — Decent Espresso**. Restart Home Assistant if prompted; HACS installations normally require a restart.
 3. Open **Settings → Devices & services → Add integration → Decaid**.
 4. Enter the IP address or hostname of the device running Decaid and its port (default `8080`). There is no automatic discovery, so give the tablet a DHCP reservation or a stable hostname. Leave the optional machine device ID blank unless you need to match a specific machine; if you enter one, setup checks that Decaid lists it. Setup succeeds while the machine itself is off, as long as the tablet answers.
@@ -152,4 +149,4 @@ Connectivity and battery sensors are diagnostic entities, so they are kept off a
 
 This integration was written by AI. It's an unofficial community project, with no affiliation to Decent Espresso and no warranty. Review it and use it at your own risk.
 
-[Report an issue](https://github.com/lgladdy/ha-decaid/issues) · [Decaid API reference](https://github.com/decentespresso/decaid/blob/main/doc/Api.md)
+[Report an issue](https://github.com/teich/ha-decaid/issues) · [Decaid API reference](https://github.com/decentespresso/decaid/blob/main/doc/Api.md)
